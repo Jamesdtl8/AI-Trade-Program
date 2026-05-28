@@ -17,9 +17,9 @@ from . import (
     config,
     db,
     entry_fill,
-    gemini_ai,
     news_scanner_feed,
     news_scanner_parser,
+    news_classify,
     position_monitor,
     price_data,
     scanner_feed,
@@ -221,8 +221,6 @@ class Engine:
         asyncio.create_task(t212_ai.run_positions_poller(), name="ai-t212-positions-poller")
         asyncio.create_task(t212_ai.run_account_summary_poller(), name="ai-t212-account-poller")
         asyncio.create_task(self._ticker_map_refresher(), name="ai-ticker-map-refresh")
-        # Background re-evaluation of watched tickers.
-        asyncio.create_task(self._review_loop(), name="ai-watch-review")
         asyncio.create_task(self._position_reconciler(), name="ai-t212-position-reconcile")
         asyncio.create_task(self._backfill_broker_pnl_loop(), name="ai-broker-pnl-backfill")
         if await t212_ai.wait_for_positions_cache(45.0):
@@ -265,338 +263,6 @@ class Engine:
                 await t212_ai.refresh_ticker_map(force=False)
             except Exception:
                 _log.exception("ticker_map_refresher iteration failed")
-
-    # ── periodic re-evaluation of the watch queue ────────────────────────
-    async def _review_loop(self) -> None:
-        """Every WATCH_REVIEW_INTERVAL_SECONDS, re-score every watched ticker.
-
-        For each entry we rebuild context from the freshest state in the DB
-        (latest alert for the ticker, current price pack), call the scorer,
-        and either:
-          - drop it (decision=SKIP, score < WATCH_DROP_SCORE, or review cap),
-          - upgrade to TRADE if a slot is open and levels are valid, or
-          - update its score+decision so the queue stays accurately ranked.
-        """
-        interval = max(60, int(config.WATCH_REVIEW_INTERVAL_SECONDS))
-        while True:
-            await asyncio.sleep(interval)
-            try:
-                if not config.trading_enabled():
-                    continue
-                snapshot = list(self.mgr.state.queue)
-                if not snapshot:
-                    continue
-                _log.info("watch review tick — %d ticker(s)", len(snapshot))
-                for qa in snapshot:
-                    try:
-                        await self._review_one(qa)
-                    except Exception:
-                        _log.exception("review failed for %s", qa.ticker)
-            except Exception:
-                _log.exception("review_loop iteration failed")
-
-    def _latest_trade_id_for(self, ticker: str) -> int | None:
-        """Return the most-recent trade id whose T212-resolved code starts with
-        the raw scanner ticker (e.g. ticker='AEHL' matches 'AEHL_US_EQ').
-        Used to link an UPGRADE_TRADE watch_history row to the trade row that
-        ``_try_open_trade`` just inserted.
-        """
-        try:
-            row = db.fetchone(
-                "SELECT id FROM trades WHERE ticker LIKE ? ORDER BY open_ts DESC LIMIT 1",
-                (ticker.upper() + "%",),
-            )
-            return int(row["id"]) if row else None
-        except Exception:
-            return None
-
-    async def _review_one(self, qa: QueuedAlert) -> None:
-        ticker = qa.ticker
-        if not ticker:
-            return
-
-        original = qa.decision_payload or {}
-
-        bl = db.t212_blacklist_get(ticker)
-        if bl:
-            existing = db.fetchone(
-                "SELECT added_ts, reviews FROM watch_queue WHERE ticker=?",
-                (ticker.upper(),),
-            )
-            added_ts = float(existing["added_ts"]) if existing else float(qa.ts)
-            review_count = int(existing["reviews"]) if existing else 0
-            initial_score = int(original.get("score") or qa.score or 0)
-            br = ""
-            try:
-                br = str(bl["reason"] or "")
-            except Exception:
-                pass
-            await self.mgr.remove_from_queue(ticker)
-            try:
-                db.watch_episode_finalize(
-                    ticker=ticker.upper(),
-                    added_ts_fallback=added_ts,
-                    ended_ts=time.time(),
-                    reason="DROP_BLACKLIST",
-                    reviews=review_count,
-                    initial_score=initial_score,
-                    peak_score=initial_score,
-                    final_score=None,
-                    final_decision=None,
-                    final_reason=f"T212 blacklist ({br})"[:500],
-                    trade_id=None,
-                    alert_id=qa.alert_id,
-                    audit_tail={
-                        "kind": "blacklist_drop",
-                        "ts": time.time(),
-                        "blacklist_reason": br,
-                    },
-                )
-            except Exception:
-                _log.exception("watch_episode_finalize failed for blacklist drop %s", ticker)
-            _log.info("watch dropped %s — T212 blacklist (%s)", ticker, br)
-            return
-
-        if t212_ai.resolve_ticker(ticker) is None:
-            existing = db.fetchone(
-                "SELECT added_ts, reviews FROM watch_queue WHERE ticker=?",
-                (ticker.upper(),),
-            )
-            added_ts = float(existing["added_ts"]) if existing else float(qa.ts)
-            review_count = int(existing["reviews"]) if existing else 0
-            initial_score = int(original.get("score") or qa.score or 0)
-            await self.mgr.remove_from_queue(ticker)
-            try:
-                db.watch_episode_finalize(
-                    ticker=ticker.upper(),
-                    added_ts_fallback=added_ts,
-                    ended_ts=time.time(),
-                    reason="DROP_NOT_ON_T212",
-                    reviews=review_count,
-                    initial_score=initial_score,
-                    peak_score=initial_score,
-                    final_score=None,
-                    final_decision=None,
-                    final_reason="Symbol not in Trading 212 instrument list",
-                    trade_id=None,
-                    alert_id=qa.alert_id,
-                    audit_tail={
-                        "kind": "not_on_t212",
-                        "ts": time.time(),
-                    },
-                )
-            except Exception:
-                _log.exception("watch_episode_finalize failed for not-on-T212 drop %s", ticker)
-            _log.info("watch dropped %s — not on T212 instrument list", ticker)
-            return
-
-        # Pull freshest stored alert for this ticker; fall back to the alert
-        # the queue entry was created from.
-        latest = db.fetchone(
-            "SELECT id, ts, raw, parsed_json, news_class FROM alerts "
-            "WHERE ticker=? AND parsed_json IS NOT NULL ORDER BY ts DESC LIMIT 1",
-            (ticker,),
-        )
-        alert: dict[str, Any] = qa.alert or {}
-        alert_id: int | None = qa.alert_id
-        if latest:
-            try:
-                parsed = json.loads(latest["parsed_json"]) or {}
-                if parsed:
-                    alert = parsed
-                    alert_id = int(latest["id"])
-            except Exception:
-                pass
-
-        ctx = ticker_context.build(ticker, {**alert, "_alert_id": alert_id})
-        pack = price_data.price_pack(ticker)
-        history = db.recent_ticker_alerts(ticker, hours=config.TICKER_HISTORY_HOURS, limit=20)
-
-        # Carry the full original decision + the chain of any prior reviews so
-        # the scorer can see its own evolving thesis, not just the latest score.
-        prior_scores = db.fetchall(
-            """SELECT ts, score, decision, reason, raw_json
-                 FROM scores
-                WHERE ticker=? AND ts >= ?
-                ORDER BY ts ASC""",
-            (ticker, qa.ts),
-        )
-        review_chain: list[dict[str, Any]] = []
-        for row in prior_scores:
-            try:
-                rj = json.loads(row["raw_json"]) if row["raw_json"] else {}
-            except Exception:
-                rj = {}
-            review_chain.append({
-                "ts": float(row["ts"]),
-                "minutes_after_watch": int((float(row["ts"]) - qa.ts) / 60),
-                "score": int(row["score"] or 0),
-                "decision": row["decision"],
-                "reason": row["reason"],
-                "entry_pattern": rj.get("entry_pattern"),
-                "risk_flags": rj.get("risk_flags") or [],
-                "is_review": bool(rj.get("review")),
-            })
-        reviews_so_far = sum(1 for r in review_chain if r.get("is_review"))
-
-        payload = {
-            "alert": alert,
-            "news_class": alert.get("news_class"),
-            "price_pack": pack,
-            "ticker_history": history,
-            "context": ctx,
-            "review": {
-                "is_review": True,
-                "minutes_on_watch": int((time.time() - qa.ts) / 60),
-                "reviews_so_far": reviews_so_far,
-                "previous_score": qa.score,
-                "previous_decision": original.get("decision"),
-                "original_decision": {
-                    "decision": original.get("decision"),
-                    "score": original.get("score"),
-                    "entry_pattern": original.get("entry_pattern"),
-                    "reason": original.get("reason"),
-                    "risk_flags": original.get("risk_flags") or [],
-                    "entry": original.get("entry"),
-                    "tp": original.get("tp"),
-                    "stop": original.get("stop"),
-                },
-                "review_chain": review_chain,
-            },
-            "slots": {
-                "open": sum(1 for s in self.mgr.state.slots if s.state == "OPEN"),
-                "active": [s.ticker for s in self.mgr.state.slots if s.state == "ACTIVE"],
-                "queue_size": len(self.mgr.state.queue),
-            },
-        }
-
-        decision = await gemini_ai.score_alert(payload)
-        self._score_count += 1
-        score = int(decision.get("score") or 0)
-        decision["score"] = score
-        decision["review"] = True
-        _normalize_scorer_decision(decision)
-
-        try:
-            db.log_score(alert_id, ticker, decision, thinking_used=config.gemini_scorer_logs_thinking_used())
-        except Exception:
-            pass
-
-        # Drop conditions: scorer says SKIP, score below floor, or hit review cap.
-        existing = db.fetchone(
-            "SELECT reviews, added_ts FROM watch_queue WHERE ticker=?", (ticker,)
-        )
-        review_count = int(existing["reviews"]) if existing else 0
-        added_ts = float(existing["added_ts"]) if existing else qa.ts
-
-        # Stats for the watch_history row (initial + peak score across the chain).
-        initial_score = int(original.get("score") or qa.score or 0)
-        peak_score = max(
-            [int(r.get("score") or 0) for r in review_chain] + [initial_score, score]
-        )
-
-        rev_event = {
-            "kind": "review",
-            "ts": time.time(),
-            "alert_id": alert_id,
-            "decision": decision.get("decision"),
-            "score": score,
-            "reason": decision.get("reason"),
-        }
-
-        drop_reason: str | None = None
-        if decision.get("decision") == "SKIP":
-            drop_reason = "DROP_SKIP"
-        elif score < config.WATCH_DROP_SCORE:
-            drop_reason = "DROP_FLOOR"
-        elif review_count + 1 >= config.WATCH_MAX_REVIEWS:
-            drop_reason = "DROP_CAP"
-
-        if drop_reason is not None:
-            rev_event["terminal"] = drop_reason
-            _log.info(
-                "watch %s %s — decision=%s score=%s reviews=%s",
-                drop_reason, ticker,
-                decision.get("decision"),
-                score,
-                review_count + 1,
-            )
-            await self.mgr.remove_from_queue(ticker)
-            try:
-                db.watch_episode_finalize(
-                    ticker=ticker,
-                    added_ts_fallback=added_ts,
-                    ended_ts=time.time(),
-                    reason=drop_reason,
-                    reviews=review_count + 1,
-                    initial_score=initial_score,
-                    peak_score=peak_score,
-                    final_score=score,
-                    final_decision=decision.get("decision"),
-                    final_reason=decision.get("reason"),
-                    trade_id=None,
-                    alert_id=alert_id,
-                    audit_tail=rev_event,
-                )
-            except Exception:
-                _log.exception("watch_episode_finalize failed for %s", ticker)
-            return
-
-        # Upgrade path: re-evaluation now says TRADE → try to open a slot.
-        if (
-            decision.get("decision") == "TRADE"
-            and score >= config.SCORER_THRESHOLD_TRADE
-        ):
-            paused, _ = self.mgr.entries_paused()
-            if not paused:
-                _log.info("watch UPGRADE→TRADE %s score=%s", ticker, score)
-                await self.mgr.remove_from_queue(ticker)
-                trade_id_before = self._latest_trade_id_for(ticker)
-                await self._try_open_trade(ticker, alert, decision, alert_id or 0)
-                trade_id_after = self._latest_trade_id_for(ticker)
-                upgraded_trade_id = (
-                    trade_id_after if trade_id_after and trade_id_after != trade_id_before else None
-                )
-                try:
-                    ue = dict(rev_event)
-                    ue["terminal"] = "UPGRADE_TRADE"
-                    db.watch_episode_finalize(
-                        ticker=ticker,
-                        added_ts_fallback=added_ts,
-                        ended_ts=time.time(),
-                        reason="UPGRADE_TRADE",
-                        reviews=review_count + 1,
-                        initial_score=initial_score,
-                        peak_score=peak_score,
-                        final_score=score,
-                        final_decision="TRADE",
-                        final_reason=decision.get("reason"),
-                        trade_id=upgraded_trade_id,
-                        alert_id=alert_id,
-                        audit_tail=ue,
-                    )
-                except Exception:
-                    _log.exception("watch_episode_finalize failed for %s (upgrade)", ticker)
-                return
-
-        # Otherwise keep watching with the refreshed score.
-        await self.mgr.update_queue_score(ticker, score=score, decision=decision)
-        try:
-            db.watch_episode_append_review(
-                ticker,
-                event=dict(rev_event),
-                score=score,
-                reviews=review_count + 1,
-            )
-        except Exception:
-            _log.exception("watch_episode_append_review failed for %s", ticker)
-        _log.info(
-            "watch KEEP %s — decision=%s score=%s (was %s)",
-            ticker,
-            decision.get("decision"),
-            score,
-            qa.score,
-        )
 
     async def _stop_monitor_for_slot_ix(self, slot_ix: int) -> None:
         t = self._monitor_tasks.pop(slot_ix, None)
@@ -1242,7 +908,7 @@ class Engine:
                 await asyncio.sleep(config.POSITION_RECONCILE_SLOW_S)
 
     async def _handle_news_scanner_message(self, msg: dict[str, Any]) -> None:
-        """Discord #news-scanner: log every outcome to ``news_scanner_log``; then maybe enqueue."""
+        """Discord #news-scanner: audit log only (does not open trades)."""
         if not config.trading_enabled():
             return
         is_edit = msg.get("event") == "message_edit"
@@ -1390,108 +1056,11 @@ class Engine:
             )
             return
 
-        grade = await gemini_ai.grade_news_scanner_post(parsed, audit=audit)
-
-        if not grade.get("worth_watch"):
-            _log_line(
-                ticker=ticker,
-                headline=headline,
-                price_v=price_v,
-                mcap_v=mcap_v,
-                raw=raw_store,
-                outcome="FLASH_SKIP",
-                flash_grade=grade,
-            )
-            return
-
-        pack = price_data.price_pack(ticker)
-        ok_gate, gate_reason = _news_scanner_price_gate(parsed, pack)
-        audit.append({"ts": time.time(), "step": "price_gate", "ok": ok_gate, "reason": gate_reason})
-
-        if not ok_gate:
-            _log.info("news_scanner skip %s — %s", ticker, gate_reason)
-            _log_line(
-                ticker=ticker,
-                headline=headline,
-                price_v=price_v,
-                mcap_v=mcap_v,
-                raw=raw_store,
-                outcome="PRICE_SKIP",
-                outcome_detail=gate_reason,
-                flash_grade=grade,
-            )
-            return
-
-        base = int(config.SCORER_THRESHOLD_WATCH)
-        if str(grade.get("grade") or "").upper() == "STRONG":
-            score = min(58, base + 10)
-        else:
-            score = min(56, base + 4)
-
-        decision: dict[str, Any] = {
-            "decision": "WATCH-NEWS",
-            "score": score,
-            "reason": grade.get("reason") or "news_scanner",
-            "flash_notes": grade.get("flash_notes") or "",
-            "source": "news_scanner",
-            "entry_pattern": "news_scanner",
-            "news_scanner_grade": grade.get("grade"),
-        }
-        alert: dict[str, Any] = {
-            "type": "NEWS_SCANNER",
-            "ticker": ticker,
-            "news_headline": parsed.get("news_headline"),
-            "price": parsed.get("price"),
-            "market_cap": parsed.get("market_cap"),
-            "tags": [],
-            "raw": str(parsed.get("raw_excerpt") or "")[:3000],
-        }
-
-        raw_for_db = json.dumps(msg, ensure_ascii=False) if is_edit else content
-        alert_id = db.log_alert(ticker, "NEWS_SCANNER", raw_for_db, alert)
-        try:
-            db.log_score(alert_id, ticker, decision, thinking_used=False)
-        except Exception:
-            _log.exception("news_scanner log_score failed %s", ticker)
-
-        await self.mgr.enqueue(
-            QueuedAlert(
-                ts=time.time(),
-                score=score,
-                ticker=ticker,
-                alert=alert,
-                decision_payload=decision,
-                alert_id=alert_id,
-            )
-        )
-        watch_hist_id: int | None = None
-        try:
-            hid = db.watch_episode_ensure_open(
-                ticker,
-                alert_id=alert_id,
-                added_ts=time.time(),
-                event={
-                    "kind": "news_scanner",
-                    "decision": "WATCH-NEWS",
-                    "score": score,
-                    "reason": decision.get("reason"),
-                    "flash_notes": decision.get("flash_notes"),
-                    "grade": grade.get("grade"),
-                },
-            )
-            if hid:
-                watch_hist_id = int(hid)
-        except Exception:
-            _log.exception("watch_episode_ensure_open news_scanner %s", ticker)
-
         audit.append(
             {
                 "ts": time.time(),
-                "step": "enqueued",
-                "alert_id": alert_id,
-                "watch_hist_id": watch_hist_id,
-                "score": score,
-                "grade": grade.get("grade"),
+                "step": "logged_only",
+                "note": "news_scanner audit log only — trading uses all-in-one-scanner GPT grader",
             }
         )
         _log_line(
@@ -1500,21 +1069,11 @@ class Engine:
             price_v=price_v,
             mcap_v=mcap_v,
             raw=raw_store,
-            outcome="ENQUEUED",
-            outcome_detail=f"score={score} grade={grade.get('grade')}",
-            flash_grade=grade,
-            alert_id=alert_id,
-            watch_hist_id=watch_hist_id,
+            outcome="LOGGED",
+            outcome_detail="audit_only_not_traded",
+            alert_id=None,
         )
-
         self._last_event_ts = time.time()
-        _log.info(
-            "news_scanner → watch %s score=%s grade=%s id=%s",
-            ticker,
-            score,
-            grade.get("grade"),
-            alert_id,
-        )
 
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         if not config.trading_enabled():
@@ -1574,7 +1133,7 @@ class Engine:
 
         news_class: str | None = None
         if alert.get("news_headline"):
-            news_class = await gemini_ai.classify_news(alert["news_headline"])
+            news_class = news_classify.classify_headline(alert["news_headline"])
             db.set_alert_news_class(alert_id, news_class)
             recent_entry["news_class"] = news_class
             if news_class == "NEGATIVE":
@@ -1690,35 +1249,7 @@ class Engine:
         async with self._trade_lock:
             slot = await self.mgr.find_open_slot()
             if not slot:
-                if fail_if_no_slot:
-                    self._record_slots_full_rejection(ticker, alert, decision, alert_id)
-                    return
-                await self.mgr.enqueue(
-                    QueuedAlert(
-                        ts=time.time(),
-                        score=int(decision.get("score") or 0),
-                        ticker=ticker,
-                        alert=alert,
-                        decision_payload=decision,
-                        alert_id=alert_id,
-                    )
-                )
-                try:
-                    db.watch_episode_ensure_open(
-                        ticker,
-                        alert_id=alert_id,
-                        added_ts=time.time(),
-                        event={
-                            "kind": "enqueue_trade_queued",
-                            "ts": time.time(),
-                            "alert_id": alert_id,
-                            "decision": decision.get("decision"),
-                            "score": int(decision.get("score") or 0),
-                            "reason": decision.get("reason"),
-                        },
-                    )
-                except Exception:
-                    _log.exception("watch_episode_ensure_open failed for %s (trade queued)", ticker)
+                self._record_slots_full_rejection(ticker, alert, decision, alert_id)
                 return
 
             entry = float(alert.get("price") or decision.get("entry") or 0.0)
@@ -1883,37 +1414,32 @@ class Engine:
                 return
 
             if phase == "closed":
-                _log.info(
-                    "market closed — deferring %s TRADE to watch queue "
-                    "(will re-evaluate at open)",
-                    ticker,
-                )
-                await self.mgr.enqueue(
-                    QueuedAlert(
-                        ts=time.time(),
-                        score=int(decision.get("score") or 0),
-                        ticker=ticker,
-                        alert=alert,
-                        decision_payload=decision,
-                        alert_id=alert_id,
-                    )
+                _log.info("market closed — skip TRADE %s (no queue)", ticker)
+                rid = db.insert(
+                    """INSERT INTO trades(slot, ticker, alert_id, entry_price, open_ts, status, exit_reason, t212_error)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        0,
+                        t212_code or ticker.upper(),
+                        alert_id,
+                        entry,
+                        time.time(),
+                        "REJECTED",
+                        "market_closed",
+                        "Market closed — TRADE not sent",
+                    ),
                 )
                 try:
-                    db.watch_episode_ensure_open(
-                        ticker,
+                    db.trade_audit_failed(
+                        trade_id=int(rid),
                         alert_id=alert_id,
+                        ticker_t212=t212_code or ticker.upper(),
                         added_ts=time.time(),
-                        event={
-                            "kind": "enqueue_market_closed",
-                            "ts": time.time(),
-                            "alert_id": alert_id,
-                            "decision": decision.get("decision"),
-                            "score": int(decision.get("score") or 0),
-                            "reason": decision.get("reason"),
-                        },
+                        audit={"reason": "Market closed", "scorer_decision": decision},
+                        final_reason="Market closed — TRADE not sent",
                     )
                 except Exception:
-                    _log.exception("watch_episode_ensure_open failed for %s (market closed)", ticker)
+                    pass
                 return
 
             try:

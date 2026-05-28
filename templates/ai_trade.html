@@ -2155,7 +2155,8 @@
   .ai-slot-pnl.down { color: var(--red); }
   .ai-slot-decision { font-size: 10px; color: var(--text3); font-family: var(--mono); margin-top: auto; padding-top: 4px; border-top: 1px solid var(--border); }
 
-  .ai-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+  .ai-grid { display: block; }
+  .ai-grid .ai-card { margin-bottom: 14px; }
   .ai-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; min-width: 0; }
 
   .ai-feed-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
@@ -2168,7 +2169,7 @@
   .ai-feed-search.has-value .ai-feed-clear { display: block; }
   .ai-feed-search.has-value .ai-feed-clear:hover { color: var(--red); }
 
-  .ai-feed { max-height: 600px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .ai-feed { max-height: min(900px, calc(100vh - 320px)); overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
   .ai-feed-section { display: flex; flex-direction: column; gap: 2px; }
   .ai-feed-section + .ai-feed-section { margin-top: 8px; }
   .ai-feed-section-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--text3); text-transform: uppercase; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
@@ -2697,7 +2698,7 @@
       <div class="ai-stat"><div class="ai-stat-lbl">Account Value</div><div class="ai-stat-val" id="ai-stat-cash">—</div><div class="ai-stat-sub" id="ai-stat-cash-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Today P&amp;L</div><div class="ai-stat-val" id="ai-stat-pnl">—</div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Open / Closed / Rejected</div><div class="ai-stat-val" id="ai-stat-counts">—</div><div class="ai-stat-sub" id="ai-stat-blocked-sub"></div></div>
-      <div class="ai-stat"><div class="ai-stat-lbl">AI Cost (today)</div><div class="ai-stat-val" id="ai-stat-ai-cost">—</div><div class="ai-stat-sub" id="ai-stat-ai-cost-sub"></div></div>
+      <div class="ai-stat"><div class="ai-stat-lbl">GPT Cost (today)</div><div class="ai-stat-val" id="ai-stat-ai-cost">—</div><div class="ai-stat-sub" id="ai-stat-ai-cost-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Scanner / Scored</div><div class="ai-stat-val" id="ai-stat-scan">—</div></div>
     </div>
 
@@ -2722,10 +2723,6 @@
           </div>
         </div>
         <div class="ai-feed" id="ai-feed"></div>
-      </div>
-      <div class="ai-card">
-        <div class="ai-section-title">Queue (waiting for slot)</div>
-        <div class="ai-queue" id="ai-queue"></div>
       </div>
     </div>
 
@@ -3570,10 +3567,8 @@ function _aiRenderStatus(s) {
   const costSub = $('ai-stat-ai-cost-sub');
   if (costSub) {
     const oa = aiUse.openai_gbp_today != null ? Number(aiUse.openai_gbp_today) : null;
-    const gm = aiUse.gemini_gbp_today != null ? Number(aiUse.gemini_gbp_today) : null;
     let subTxt = 'All time £' + costTotal.toFixed(2);
-    if (oa != null && !Number.isNaN(oa)) subTxt += ' · GPT £' + oa.toFixed(2);
-    if (gm != null && !Number.isNaN(gm)) subTxt += ' · Gemini £' + gm.toFixed(2);
+    if (oa != null && !Number.isNaN(oa)) subTxt += ' · today £' + oa.toFixed(2);
     costSub.textContent = subTxt;
   }
   const toggle = $('ai-trading-toggle');
@@ -3632,24 +3627,6 @@ function _aiRenderSlots(sl) {
       </div>
     `;
   }).join('');
-  const queueRoot = $('ai-queue');
-  if (queueRoot) {
-    const q = (sl && sl.queue) || [];
-    queueRoot.innerHTML = q.length ? q.map((it) => `
-      <div class="ai-queue-row">
-        <span style="color:var(--amber)">${it.score || 0}</span>
-        <span>${it.ticker}</span>
-        <span>${(it.decision_payload && it.decision_payload.decision) || '—'}</span>
-        <span>${_aiFmtPrice(it.decision_payload && it.decision_payload.entry)}</span>
-        <span>${_aiFmtPrice(it.decision_payload && it.decision_payload.tp)}</span>
-        <span>${_aiFmtPrice(it.decision_payload && it.decision_payload.stop)}</span>
-        <button type="button" class="ai-queue-view" data-watch-ticker="${it.ticker}">View</button>
-      </div>
-    `).join('') : '<div style="color:var(--text3);font-size:11px;padding:8px;">Queue empty</div>';
-    queueRoot.querySelectorAll('button[data-watch-ticker]').forEach((b) => {
-      b.addEventListener('click', () => _aiOpenWatchDrawer(b.dataset.watchTicker));
-    });
-  }
 }
 
 let _aiFeedFilter = '';

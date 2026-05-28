@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from .. import config
-from ..gemini_ai import _extract_balanced_json_object, _parse_scorer_json, _strip_json_fences
+from .. import json_parse
 from . import messages, prompt
 from .. import openai_usage
 
@@ -16,26 +16,7 @@ _log = logging.getLogger("ai_sandbox.grader.openai_grader")
 
 
 def _parse_grader_json(text: str) -> dict[str, Any] | None:
-    raw = (text or "").strip()
-    if not raw:
-        return None
-    bracket = _extract_balanced_json_object(raw)
-    candidates = [_strip_json_fences(raw), raw]
-    if bracket:
-        candidates.extend([bracket, _strip_json_fences(bracket)])
-    seen: set[str] = set()
-    for cand in candidates:
-        c = cand.strip()
-        if not c or c in seen:
-            continue
-        seen.add(c)
-        try:
-            out = json.loads(c)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(out, dict) and (out.get("action") or out.get("grade")):
-            return out
-    return _parse_scorer_json(text)
+    return json_parse.parse_decision_json(text)
 
 
 async def grade_alert(state: dict[str, Any]) -> tuple[dict[str, Any] | None, int, float]:
