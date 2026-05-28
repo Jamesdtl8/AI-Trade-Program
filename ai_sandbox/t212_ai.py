@@ -888,7 +888,7 @@ async def backfill_closed_trade_pnl_from_broker(
         """UPDATE trades SET pnl_gbp=?, exit_price=COALESCE(?, exit_price),
                               pnl_pct=COALESCE(?, pnl_pct),
                               quantity=COALESCE(?, quantity)
-           WHERE id=? AND status='CLOSED'""",
+           WHERE id=? AND status IN ('SELL_PENDING', 'CLOSED')""",
         (
             round(float(realised), 4),
             exit_px,

@@ -389,6 +389,23 @@ def entry_limit_cap_price(entry: float) -> float:
     return round(float(entry) * (1.0 + ENTRY_LIMIT_CAP_PCT / 100.0), 6)
 
 
+def uk_day_start_ts(now: float | None = None) -> float:
+    """Unix timestamp for today's midnight in Europe/London (GBP account day boundary)."""
+    import datetime as _dt
+
+    ts = float(now if now is not None else __import__("time").time())
+    tz = _dt.timezone(_dt.timedelta(hours=0))
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("Europe/London")
+    except Exception:
+        pass
+    dt = _dt.datetime.fromtimestamp(ts, tz=tz)
+    day0 = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day0.timestamp()
+
+
 def reconcile_orphan_positions() -> bool:
     """When false, broker positions without a matching OPEN trade are ignored."""
     return _env("AI_RECONCILE_ORPHAN_POSITIONS", "1").strip().lower() in ("1", "true", "yes")

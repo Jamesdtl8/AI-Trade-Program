@@ -16,7 +16,7 @@ _log = logging.getLogger("ai_sandbox.slot_manager")
 @dataclass
 class Slot:
     index: int
-    state: str = "OPEN"  # OPEN | ACTIVE | COOLING
+    state: str = "OPEN"  # OPEN | ACTIVE | SELL_PENDING | COOLING
     ticker: str | None = None
     trade_id: int | None = None
     entry: float | None = None
@@ -152,6 +152,17 @@ class SlotManager:
             slot.cooling_until = time.time() + config.COOLING_SECONDS
             slot.last_decision = f"closed:{reason}"
             slot.last_price = exit_price
+
+    async def mark_sell_pending(self, slot: Slot, *, reason: str) -> None:
+        async with self._lock:
+            slot.state = "SELL_PENDING"
+            slot.last_decision = f"sell_pending:{reason}"
+            slot.take_profit_order_id = None
+
+    async def release_after_sell(self, slot: Slot) -> None:
+        """Broker position gone — free the slot immediately (no cooling)."""
+        async with self._lock:
+            self._reset_slot(slot)
 
     async def force_reset_slot(self, slot: Slot) -> None:
         """Immediately return a slot to OPEN (broker reconciler / orphan cleanup)."""

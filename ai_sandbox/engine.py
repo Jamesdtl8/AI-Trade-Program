@@ -979,9 +979,9 @@ class Engine:
                     continue
                 rows = db.fetchall(
                     """
-                    SELECT id, ticker, entry_price, t212_close_order_id, pnl_gbp, exit_reason
+                    SELECT id, ticker, entry_price, t212_close_order_id, pnl_gbp, exit_reason, status
                       FROM trades
-                     WHERE status='CLOSED'
+                     WHERE status IN ('SELL_PENDING', 'CLOSED')
                        AND t212_close_order_id IS NOT NULL
                        AND TRIM(t212_close_order_id) != ''
                      ORDER BY exit_ts DESC
@@ -990,8 +990,9 @@ class Engine:
                 )
                 for row in rows:
                     row_d = dict(row)
+                    st = str(row_d.get("status") or "").upper()
                     reason = str(row_d.get("exit_reason") or "")
-                    if any(
+                    if st == "CLOSED" and any(
                         reason.startswith(p) or reason == p
                         for p in config.UNCONFIRMED_CLOSE_REASON_PREFIXES
                     ):
@@ -1008,6 +1009,12 @@ class Engine:
                             entry_price=float(row_d.get("entry_price") or 0.0),
                         )
                         if realised is not None:
+                            if st == "SELL_PENDING":
+                                db.execute(
+                                    """UPDATE trades SET status='CLOSED'
+                                       WHERE id=? AND status='SELL_PENDING'""",
+                                    (int(row_d["id"]),),
+                                )
                             old = row_d.get("pnl_gbp")
                             if old is None or abs(float(old) - float(realised)) > 0.02:
                                 _log.info(
@@ -1061,6 +1068,21 @@ class Engine:
                     tracked_tickers: set[str] = set()
 
                     for sl in self.mgr.state.slots:
+                        if sl.state != "SELL_PENDING" or not sl.ticker or sl.trade_id is None:
+                            continue
+                        tkr_sp = sl.ticker.strip().upper()
+                        qty_sp = broker_by_tkr.get(tkr_sp, 0.0)
+                        if qty_sp <= 1e-6:
+                            await self.mgr.release_after_sell(sl)
+                            try:
+                                from .position_monitor import _try_confirm_close_from_broker
+
+                                await _try_confirm_close_from_broker(int(sl.trade_id), tkr_sp)
+                            except Exception:
+                                _log.exception("reconcile confirm pending trade=%s", sl.trade_id)
+                            had_fast = True
+
+                    for sl in self.mgr.state.slots:
                         if sl.state != "ACTIVE" or not sl.ticker or sl.trade_id is None:
                             continue
                         tkr_sl = sl.ticker.strip().upper()
@@ -1089,16 +1111,24 @@ class Engine:
                         qty_b = broker_by_tkr.get(tkr_sl, 0.0)
                         if qty_b <= 1e-6:
                             _log.warning(
-                                "AI RECONCILE broker flat slot=%s t212=%s — clearing SQL/monitor state",
+                                "AI RECONCILE broker flat slot=%s t212=%s — releasing slot (await broker confirm)",
                                 sl.index,
                                 tkr_sl,
                             )
-                            await self._close_open_trade_external(
-                                trade_id=int(sl.trade_id),
-                                slot_ix=int(sl.index),
-                                slot_obj=sl,
-                                reason="natural_close:external_reconcile_t212_flat",
+                            db.execute(
+                                """UPDATE trades SET status='SELL_PENDING', exit_ts=COALESCE(exit_ts, ?),
+                                          exit_reason=COALESCE(exit_reason, 'reconcile_broker_flat')
+                                   WHERE id=? AND status='OPEN'""",
+                                (time.time(), int(sl.trade_id)),
                             )
+                            await self._stop_monitor_for_slot_ix(int(sl.index))
+                            await self.mgr.release_after_sell(sl)
+                            try:
+                                from .position_monitor import _try_confirm_close_from_broker
+
+                                await _try_confirm_close_from_broker(int(sl.trade_id), tkr_sl)
+                            except Exception:
+                                _log.exception("reconcile confirm after flat trade=%s", sl.trade_id)
                             had_fast = True
                             continue
 
@@ -1861,22 +1891,8 @@ class Engine:
                 return
 
             try:
-                if phase == "extended":
-                    _log.info(
-                        "extended-hours entry %s — sending market order "
-                        "(T212 rejects limits in pre/post)",
-                        t212_code,
-                    )
-                    order = await t212_ai.place_market(t212_code, quantity)
-                else:
-                    _log.info(
-                        "regular-hours entry %s — limit @ %.4f (cap +%.1f%% above AI entry %.4f)",
-                        t212_code,
-                        max_entry,
-                        config.ENTRY_LIMIT_CAP_PCT,
-                        entry,
-                    )
-                    order = await t212_ai.place_limit(t212_code, quantity, max_entry)
+                _log.info("entry %s — market buy (all sessions)", t212_code)
+                order = await t212_ai.place_market(t212_code, quantity)
             except t212_ai.T212AIError as exc:
                 blob = _t212_error_blob(exc.body, exc.status)
                 brief = _t212_detail_short(exc.body, exc.status)
@@ -1931,50 +1947,24 @@ class Engine:
 
             request_qty_live = float(order.get("quantity") or quantity)
 
-            filled_qty: float | None = None
-            fill_avg: float | None = None
-            if phase == "extended":
-                fq, favg = await entry_fill.wait_market_fill(
-                    t212_code,
-                    quantity,
-                    timeout_sec=config.FILL_WAIT_TIMEOUT_SECONDS,
+            fq, favg = await entry_fill.wait_market_fill(
+                t212_code,
+                quantity,
+                timeout_sec=config.FILL_WAIT_TIMEOUT_SECONDS,
+            )
+            if not fq or fq <= 0:
+                blob = json.dumps({"detail": "market_entry_positions_timeout"})
+                rid = _reject_row(blob, "entry_unfilled_market_timeout", attempted_qty=quantity)
+                _record_failed(
+                    rid,
+                    "entry_unfilled_market_timeout",
+                    kind="entry_timeout",
+                    body={"detail": "market_entry_positions_timeout"},
+                    qty=quantity,
                 )
-                if not fq or fq <= 0:
-                    blob = json.dumps({"detail": "market_entry_positions_timeout"})
-                    rid = _reject_row(blob, "entry_unfilled_market_timeout", attempted_qty=quantity)
-                    _record_failed(
-                        rid,
-                        "entry_unfilled_market_timeout",
-                        kind="entry_timeout",
-                        body={"detail": "market_entry_positions_timeout"},
-                        qty=quantity,
-                    )
-                    _log.warning("market entry not confirmed positions %s qty_req=%s", t212_code, quantity)
-                    return
-                filled_qty, fill_avg = fq, favg
-            else:
-                fq, stat, favg = await entry_fill.wait_limit_fill(
-                    str(oid),
-                    t212_code,
-                    requested_qty=request_qty_live,
-                    timeout_sec=config.FILL_WAIT_TIMEOUT_SECONDS,
-                    partial_threshold=config.FILL_PARTIAL_THRESHOLD,
-                )
-                if not fq or fq <= 0:
-                    blob = json.dumps({"detail": f"limit_entry_unfilled:{stat}"})
-                    rid = _reject_row(blob, f"unfilled:{stat}", attempted_qty=request_qty_live)
-                    _record_failed(
-                        rid,
-                        f"unfilled:{stat}",
-                        kind="entry_unfilled",
-                        body={"detail": f"limit_entry_unfilled:{stat}", "order_id": str(oid)},
-                        qty=request_qty_live,
-                    )
-                    _log.warning(
-                        "limit entry unfilled %s order=%s status=%s", t212_code, oid, stat,
-                    )
-                    return
-                filled_qty, fill_avg = fq, favg
+                _log.warning("market entry not confirmed positions %s qty_req=%s", t212_code, quantity)
+                return
+            filled_qty, fill_avg = fq, favg
 
             filled_prec = t212_ai.snap_quantity(float(filled_qty), precision)
 
@@ -2059,7 +2049,7 @@ class Engine:
                     "quantity_filled": float(filled_prec),
                     "fill_avg_broker": fill_avg_bf,
                     "t212_open_order_id": str(order.get("id") or ""),
-                    "entry_order_kind": "market" if phase == "extended" else "limit",
+                    "entry_order_kind": "market",
                 },
             }
             try:

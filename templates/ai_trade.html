@@ -2137,11 +2137,13 @@
   .ai-slots { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 10px; }
   .ai-slot { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-height: 150px; display: flex; flex-direction: column; gap: 6px; }
   .ai-slot.active { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green-dim); }
+  .ai-slot.sell_pending { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber-dim); }
   .ai-slot.cooling { border-color: var(--amber); }
   .ai-slot-head { display: flex; justify-content: space-between; align-items: center; }
   .ai-slot-idx { font-family: var(--mono); font-size: 11px; color: var(--text3); font-weight: 700; }
   .ai-slot-state { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: var(--bg3); color: var(--text2); text-transform: uppercase; }
   .ai-slot.active .ai-slot-state { color: var(--green); background: var(--green-dim); }
+  .ai-slot.sell_pending .ai-slot-state { color: var(--amber); background: var(--amber-dim); }
   .ai-slot.cooling .ai-slot-state { color: var(--amber); background: var(--amber-dim); }
   .ai-slot-ticker { font-family: var(--mono); font-size: 22px; font-weight: 700; letter-spacing: 1px; }
   .ai-slot-row { display: flex; justify-content: space-between; font-size: 11px; font-family: var(--mono); color: var(--text2); }
@@ -2399,6 +2401,7 @@
   .ai-trade-row.win { border-left: 3px solid var(--green); }
   .ai-trade-row.loss { border-left: 3px solid var(--red); }
   .ai-trade-row.open { border-left: 3px solid var(--blue); }
+  .ai-trade-row.pending { border-left: 3px solid var(--amber); }
   .ai-trade-row.blocked { border-left: 3px solid var(--amber); }
   .ai-trade-row.blocked-sim-running { border-left: 3px solid var(--amber); background: rgba(251,191,36,0.06); }
   .ai-trade-row.blocked-done-win { border-left: 3px solid var(--green); }
@@ -3531,9 +3534,9 @@ function _aiRenderStatus(s) {
     !Number.isNaN(Number(ou))
   ) {
     pnlEl.title =
-      'Closed (rolling 24h): ' +
+      'Today (UK midnight): closed ' +
       _aiFmtMoney(rlz) +
-      ' · Open unrealized: ' +
+      ' · open unrealized ' +
       _aiFmtMoney(ou);
   } else {
     pnlEl.title = '';
@@ -3564,7 +3567,7 @@ function _aiRenderSlots(sl) {
   if (!root) return;
   const slots = (sl && sl.slots) || [];
   root.innerHTML = slots.map((s) => {
-    const state = (s.state || 'OPEN').toLowerCase();
+    const state = (s.state || 'OPEN').toLowerCase().replace(/\s+/g, '_');
     const pnl = s.unreal_pct;
     const pnlCls = pnl == null ? '' : (pnl > 0 ? 'up' : pnl < 0 ? 'down' : '');
     const costGbp = s.wallet_total_cost_gbp != null ? Number(s.wallet_total_cost_gbp) : Number(s.capital_gbp || 0);
@@ -3583,7 +3586,11 @@ function _aiRenderSlots(sl) {
       valueGbp != null && !Number.isNaN(valueGbp) && showMoney
         ? `<div class="ai-slot-row" title="T212 walletImpact.currentValue (GBP)"><span>Value</span><b>${_aiFmtMoney(valueGbp)}</b></div>`
         : '';
-    const stateLbl = s.broker_unassigned ? 'BROKER' : (s.state || 'OPEN');
+    const stateLbl = s.broker_unassigned
+      ? 'BROKER'
+      : String(s.state || 'OPEN').toUpperCase() === 'SELL_PENDING'
+        ? 'SELL PENDING'
+        : (s.state || 'OPEN');
     return `
       <div class="ai-slot ${state}">
         <div class="ai-slot-head">
@@ -4071,30 +4078,34 @@ const AI_TRADE_HIST_COLS =
 function _aiRenderTradeRow(t) {
     const rej = t.status === 'REJECTED' || t.status === 'BLOCKED_T212';
     const isOpen = t.status === 'OPEN';
+    const isPending = t.status === 'SELL_PENDING';
     let cls = 'open';
     if (isOpen) cls = 'open';
+    else if (isPending) cls = 'pending';
     else if (rej) cls = 'blocked';
     else if (t.status === 'CLOSED') cls = Number(t.pnl_gbp || 0) > 0 ? 'win' : 'loss';
     else cls = 'blocked';
     const livePct = isOpen && t.live_unreal_pct != null ? Number(t.live_unreal_pct) : null;
     const liveGbp = isOpen && t.live_pnl_gbp != null ? Number(t.live_pnl_gbp) : null;
-    const effPct = rej ? null : (livePct != null && !Number.isNaN(livePct) ? livePct : (t.pnl_pct != null ? Number(t.pnl_pct) : null));
-    const effGbp = rej ? null : (liveGbp != null && !Number.isNaN(liveGbp) ? liveGbp : (t.pnl_gbp != null ? Number(t.pnl_gbp) : null));
+    const effPct = rej || isPending ? null : (livePct != null && !Number.isNaN(livePct) ? livePct : (t.pnl_pct != null ? Number(t.pnl_pct) : null));
+    const effGbp = rej || isPending ? null : (liveGbp != null && !Number.isNaN(liveGbp) ? liveGbp : (t.pnl_gbp != null ? Number(t.pnl_gbp) : null));
     const pnlCls = effGbp != null && !Number.isNaN(effGbp) && effGbp > 0 ? 'up' : effGbp != null && !Number.isNaN(effGbp) && effGbp < 0 ? 'down' : '';
     const opened = t.open_ts ? new Date(t.open_ts * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
     const disp = escapeHtml(t.display_ticker || (t.ticker || '').replace(/_US_EQ$/i, '').trim() || t.ticker || '—');
     const titleFull = escapeHtml(t.ticker || '');
     const priceBuy = t.entry_price;
-    const priceSell = rej ? null : t.exit_price;
-    const pct = effPct;
-    const gbpLbl = rej ? '—' : _aiFmtMoney(effGbp);
+    const priceSell = rej ? null : (isPending ? null : t.exit_price);
+    const pct = isPending ? null : effPct;
+    const gbpLbl = rej ? '—' : (isPending ? 'pending' : _aiFmtMoney(effGbp));
     const errSnippet = rej && t.t212_error
       ? escapeHtml(String(t.t212_error).slice(0, 160))
       : '';
     const reasonHtml = rej
       ? `${escapeHtml(String((t.exit_reason || 'Rejected').trim()))}` +
         (errSnippet ? ` <span style="color:var(--text3);font-size:9px;">${errSnippet}…</span>` : '')
-      : escapeHtml(String((t.exit_reason || t.status || '—')).trim());
+      : isPending
+        ? 'SELL PENDING'
+        : escapeHtml(String((t.exit_reason || t.status || '—')).trim());
     const reasonTitle = rej
       ? String(t.t212_error || t.exit_reason || '')
           .replace(/&/g, '&amp;')
@@ -4124,7 +4135,7 @@ function _aiRenderTradeRow(t) {
         ${tickerCell}
         <span class="ai-trade-num" title="Scorer entry / limit reference">${_aiFmtPrice(priceBuy)}</span>
         ${costCell}
-        <span class="ai-trade-num" title="${rej ? 'No broker fill' : 'Exit'}">${_aiFmtPrice(priceSell)}</span>
+        <span class="ai-trade-num" title="${isPending ? 'Awaiting broker fill confirmation' : (rej ? 'No broker fill' : 'Exit')}">${isPending ? 'pending' : _aiFmtPrice(priceSell)}</span>
         <span>${_aiFmtPct(pct)}</span>
         <span class="ai-trade-pnl ai-trade-num ${pnlCls}">${gbpLbl}</span>
         <span class="ai-trade-reason" title="${reasonTitle}">${reasonHtml}</span>
@@ -4901,6 +4912,7 @@ function _aiRenderTrades(tr) {
     </div>
   `;
   const open = items.filter((t) => t.status === 'OPEN');
+  const pending = items.filter((t) => t.status === 'SELL_PENDING');
   const closed = items.filter((t) => t.status === 'CLOSED');
   const rejected = items.filter((t) => t.status === 'REJECTED' || t.status === 'BLOCKED_T212');
 
@@ -4914,6 +4926,7 @@ function _aiRenderTrades(tr) {
   root.innerHTML =
     tradeHead +
     sec('Open', open, '') +
+    sec('Sell pending', pending, 'awaiting broker confirm') +
     sec('Closed', closed, '') +
     sec('Rejected (no fill)', rejected, '');
 }

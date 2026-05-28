@@ -35,9 +35,11 @@ def api_ai_status():
         return jsonify(ok=False, error="ai_engine_not_running"), 503
     cfg = _ai_config()
     db = _ai_db()
+    day0 = cfg.uk_day_start_ts()
     today_pnl_row = db.fetchone(
-        "SELECT COALESCE(SUM(pnl_gbp),0) AS s FROM trades WHERE status='CLOSED' AND exit_ts >= ?",
-        (time.time() - 86400,),
+        """SELECT COALESCE(SUM(pnl_gbp),0) AS s FROM trades
+           WHERE status='CLOSED' AND exit_ts >= ? AND pnl_gbp IS NOT NULL""",
+        (day0,),
     )
     today_pnl_realized = float(today_pnl_row["s"]) if today_pnl_row else 0.0
     px_map = _ai_live_price_usd_by_ticker()
@@ -48,12 +50,17 @@ def api_ai_status():
     broker_open = len(broker_rows)
     open_trades_n = broker_open if broker_open else (int(open_trades["c"]) if open_trades else 0)
     closed_today = db.fetchone(
-        "SELECT COUNT(*) AS c FROM trades WHERE status='CLOSED' AND exit_ts >= ?",
-        (time.time() - 86400,),
+        """SELECT COUNT(*) AS c FROM trades
+           WHERE status='CLOSED' AND exit_ts >= ? AND pnl_gbp IS NOT NULL""",
+        (day0,),
+    )
+    sell_pending_today = db.fetchone(
+        "SELECT COUNT(*) AS c FROM trades WHERE status='SELL_PENDING' AND exit_ts >= ?",
+        (day0,),
     )
     rejected_today = db.fetchone(
         "SELECT COUNT(*) AS c FROM trades WHERE status IN ('REJECTED','BLOCKED_T212') AND open_ts >= ?",
-        (time.time() - 86400,),
+        (day0,),
     )
     cash = _ai_cash_cached()
     gemini_usage_payload: dict = {}
@@ -84,9 +91,11 @@ def api_ai_status():
         today_pnl_gbp=today_pnl,
         today_pnl_realized_gbp=round(today_pnl_realized, 2),
         today_pnl_open_unreal_gbp=today_pnl_open_unreal,
+        today_pnl_day_start_ts=day0,
         open_trades=open_trades_n,
         broker_open_positions=broker_open,
         closed_today=int(closed_today["c"]) if closed_today else 0,
+        sell_pending_today=int(sell_pending_today["c"]) if sell_pending_today else 0,
         rejected_today=int(rejected_today["c"]) if rejected_today else 0,
         cash=cash,
         gemini_usage=gemini_usage_payload,
@@ -264,7 +273,8 @@ def _ai_merge_broker_into_slots(snap: dict[str, Any], broker_rows: list[dict[str
     free_indices = [
         i
         for i, s in enumerate(slots)
-        if str(s.get("state") or "").upper() != "ACTIVE" or not s.get("trade_id")
+        if str(s.get("state") or "").upper() not in ("ACTIVE", "SELL_PENDING")
+        or not s.get("trade_id")
     ]
     orphan_rows = [r for r in broker_rows if r["ticker"] not in assigned]
     for idx, br in zip(free_indices, orphan_rows):
@@ -626,6 +636,9 @@ def api_ai_trades():
                     it["live_pnl_gbp"] = round(float(wm["unreal_gbp"]), 2)
                 if wm.get("unreal_pct") is not None:
                     it["live_unreal_pct"] = round(float(wm["unreal_pct"]), 4)
+            if str(it.get("status") or "").upper() == "SELL_PENDING":
+                it["pending_close"] = True
+                it["display_status"] = "SELL PENDING"
             if it.get("status") == "OPEN" and it.get("live_unreal_pct") is None:
                 px = px_map.get(tku) if tku else None
                 if px is not None and px > 0:
