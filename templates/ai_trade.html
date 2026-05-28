@@ -2197,19 +2197,19 @@
   .ai-feed-cols {
     display: grid;
     grid-template-columns:
-      54px 62px 36px 58px 48px 54px 44px 40px 50px minmax(56px, 1fr) 96px;
-    gap: 4px 6px; align-items: center; padding: 4px 8px; min-width: 700px;
+      76px 24px 78px 44px 72px 54px 58px 52px 48px 54px 96px 112px;
+    gap: 6px 12px; align-items: center; padding: 6px 12px; min-width: 820px;
   }
+  .ai-feed-cols > * { justify-self: start; text-align: left; min-width: 0; }
   .ai-feed-colhead {
     font-family: var(--mono); font-size: 9px; color: var(--text3);
     text-transform: uppercase; letter-spacing: 0.35px;
     border-bottom: 1px solid var(--border); background: var(--bg2);
     position: sticky; top: 0; z-index: 1;
   }
-  .ai-feed-colhead span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ai-feed-col { font-family: var(--mono); font-size: 10px; min-width: 0;
+  .ai-feed-colhead span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+  .ai-feed-col { font-family: var(--mono); font-size: 10px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ai-feed-col.num { text-align: right; font-variant-numeric: tabular-nums; }
   .ai-feed-col.empty { color: var(--text3); opacity: 0.45; }
   .ai-feed-col.pct.up { color: var(--green); font-weight: 700; }
   .ai-feed-col.pct.down { color: var(--red); font-weight: 700; }
@@ -2218,13 +2218,23 @@
 
   .ai-feed-row { border-radius: 6px; font-size: 11px; }
   .ai-feed-row:hover { background: var(--bg3); }
-  .ai-feed-time { font-family: var(--mono); color: var(--text3); font-size: 10px; display: flex; align-items: center; gap: 3px; }
-  .ai-feed-type { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 3px; background: var(--bg3); color: var(--text2); text-align: center; justify-self: stretch; }
+  .ai-feed-time {
+    font-family: var(--mono); color: var(--text3); font-size: 10px;
+    white-space: nowrap; font-variant-numeric: tabular-nums;
+  }
+  .ai-feed-info-cell { display: flex; align-items: center; justify-content: flex-start; width: 24px; }
+  .ai-feed-type {
+    font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 2px 6px;
+    border-radius: 3px; background: var(--bg3); color: var(--text2); display: inline-block;
+  }
   .ai-feed-type.SCANNER { color: var(--blue); background: var(--blue-dim); }
   .ai-feed-type.FIRE { color: var(--amber); background: var(--amber-dim); }
   .ai-feed-type.WHALE { color: #c084fc; background: rgba(192,132,252,0.12); }
   .ai-feed-type.HALT, .ai-feed-type.OFFERING { color: var(--red); background: var(--red-dim); }
-  .ai-feed-rank { font-family: var(--mono); font-size: 10px; color: var(--text3); text-align: center; background: var(--bg3); border-radius: 3px; padding: 1px 0; }
+  .ai-feed-rank {
+    font-family: var(--mono); font-size: 10px; color: var(--text3);
+    background: var(--bg3); border-radius: 3px; padding: 1px 6px; display: inline-block;
+  }
   .ai-feed-rank.r1 { color: var(--text2); }
   .ai-feed-rank.r2 { color: var(--blue); background: var(--blue-dim); }
   .ai-feed-rank.r3 { color: var(--amber); background: var(--amber-dim); }
@@ -2235,7 +2245,11 @@
   .ai-feed-tag-chip.kn { color: var(--green); background: var(--green-dim); }
   .ai-feed-tag-chip.sq { color: var(--amber); background: var(--amber-dim); }
   .ai-feed-tag-chip.bk { color: var(--blue); background: var(--blue-dim); }
-  .ai-feed-tag { font-family: var(--mono); font-size: 10px; padding: 1px 6px; border-radius: 3px; text-align: center; white-space: nowrap; justify-self: end; max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+  .ai-feed-tag {
+    font-family: var(--mono); font-size: 10px; padding: 2px 8px; border-radius: 3px;
+    text-align: left; white-space: nowrap; display: inline-block;
+    max-width: 112px; overflow: hidden; text-overflow: ellipsis;
+  }
   .ai-feed-tag.skip { color: var(--text3); background: var(--bg3); }
   .ai-feed-tag.trade { color: var(--green); background: var(--green-dim); font-weight: 700; }
   .ai-feed-tag.watch { color: var(--amber); background: var(--amber-dim); }
@@ -3623,9 +3637,8 @@ function _aiHumanReason(code) {
 
 const _AI_FEED_COLHEAD = `
   <div class="ai-feed-colhead ai-feed-cols">
-    <span>Time</span><span>Type</span><span>#</span><span>Ticker</span>
-    <span class="num">%</span><span class="num">$</span><span class="num">RV</span>
-    <span class="num">FT</span><span class="num">MC</span><span>Tags</span><span>Status</span>
+    <span>Time</span><span></span><span>Type</span><span>#</span><span>Ticker</span>
+    <span>%</span><span>$</span><span>RV</span><span>FT</span><span>MC</span><span>Tags</span><span>Status</span>
   </div>
 `;
 
@@ -3679,26 +3692,26 @@ function _aiFeedRow(m) {
     ? `<span class="ai-feed-rank ${rankCls}">#${rank}</span>`
     : `<span class="ai-feed-col empty">—</span>`;
 
-  let pctHtml = '<span class="ai-feed-col num empty">—</span>';
+  let pctHtml = '<span class="ai-feed-col empty">—</span>';
   if (p.pct != null) {
     const dir = p.pct > 0 ? 'up' : (p.pct < 0 ? 'down' : '');
     const sign = p.pct > 0 ? '+' : '';
-    pctHtml = `<span class="ai-feed-col num pct ${dir}">${sign}${p.pct.toFixed(p.pct >= 100 ? 0 : 1)}</span>`;
+    pctHtml = `<span class="ai-feed-col pct ${dir}">${sign}${p.pct.toFixed(p.pct >= 100 ? 0 : 1)}</span>`;
   }
   const priceHtml = p.price != null
-    ? `<span class="ai-feed-col num">${Number(p.price).toFixed(p.price >= 10 ? 2 : 3)}</span>`
-    : '<span class="ai-feed-col num empty">—</span>';
-  let rvHtml = '<span class="ai-feed-col num empty">—</span>';
+    ? `<span class="ai-feed-col">${Number(p.price).toFixed(p.price >= 10 ? 2 : 3)}</span>`
+    : '<span class="ai-feed-col empty">—</span>';
+  let rvHtml = '<span class="ai-feed-col empty">—</span>';
   if (p.rv != null) {
     const hot = p.rv >= 10 ? 'hot' : (p.rv < 3 ? 'cold' : '');
-    rvHtml = `<span class="ai-feed-col num rv ${hot}">${p.rv >= 10 ? Math.round(p.rv) : p.rv.toFixed(1)}x</span>`;
+    rvHtml = `<span class="ai-feed-col rv ${hot}">${p.rv >= 10 ? Math.round(p.rv) : p.rv.toFixed(1)}x</span>`;
   }
   const ftHtml = p.float != null
-    ? `<span class="ai-feed-col num">${_aiFmtCompact(p.float)}</span>`
-    : '<span class="ai-feed-col num empty">—</span>';
+    ? `<span class="ai-feed-col">${_aiFmtCompact(p.float)}</span>`
+    : '<span class="ai-feed-col empty">—</span>';
   const mcHtml = p.market_cap != null
-    ? `<span class="ai-feed-col num">${_aiFmtCompact(p.market_cap)}</span>`
-    : '<span class="ai-feed-col num empty">—</span>';
+    ? `<span class="ai-feed-col">${_aiFmtCompact(p.market_cap)}</span>`
+    : '<span class="ai-feed-col empty">—</span>';
 
   const tagsHtml = (p.tags || []).slice(0, 4).map(_aiTagChip).join('');
   const newsClass = (p.news_headline || m.news_class) ? 'has-news' : '';
@@ -3710,7 +3723,8 @@ function _aiFeedRow(m) {
 
   return `
     <div class="${rowCls} ai-feed-cols" data-alert-id="${m.alert_id || ''}" data-ticker="${m.ticker || ''}" title="${titleAttr}">
-      <span class="ai-feed-time">${time}${info}</span>
+      <span class="ai-feed-time">${time}</span>
+      <span class="ai-feed-info-cell">${info}</span>
       <span class="ai-feed-type ${type}">${type}</span>
       ${rankHtml}
       <span class="ai-feed-ticker ai-feed-col">${m.ticker || '—'}</span>
