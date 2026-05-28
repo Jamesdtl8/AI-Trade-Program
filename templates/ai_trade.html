@@ -2172,14 +2172,32 @@
   .ai-feed { max-height: min(900px, calc(100vh - 320px)); overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
   .ai-feed-section { display: flex; flex-direction: column; gap: 2px; }
   .ai-feed-section + .ai-feed-section { margin-top: 8px; }
-  .ai-feed-section-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--text3); text-transform: uppercase; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
-  .ai-feed-section-head .count { color: var(--text2); background: var(--bg3); border-radius: 3px; padding: 1px 6px; font-size: 9px; }
+  .ai-feed-section-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+    font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 1px;
+    color: var(--text3); text-transform: uppercase; border-bottom: 1px solid var(--border);
+    margin-bottom: 2px; width: 100%; border-left: 0; border-right: 0; border-top: 0;
+    background: transparent; cursor: pointer; text-align: left; transition: background 0.12s;
+  }
+  .ai-feed-section-head:hover { background: var(--bg3); }
+  .ai-feed-section-chevron {
+    display: inline-block; font-size: 9px; color: var(--text3);
+    transition: transform 0.15s ease; flex-shrink: 0; width: 12px;
+  }
+  .ai-feed-section.collapsed .ai-feed-section-chevron { transform: rotate(-90deg); }
+  .ai-feed-section.collapsed .ai-feed-section-body { display: none; }
+  .ai-feed-section-head .count { margin-left: auto; color: var(--text2); background: var(--bg3); border-radius: 3px; padding: 1px 6px; font-size: 9px; }
   .ai-feed-section.action .ai-feed-section-head { color: var(--green); border-bottom-color: var(--green-dim); }
   .ai-feed-section.event  .ai-feed-section-head { color: var(--amber); border-bottom-color: var(--amber-dim); }
   .ai-feed-section.trade .ai-feed-section-head { color: var(--green); border-bottom-color: var(--green-dim); }
+  .ai-feed-section.filtered .ai-feed-section-head { color: var(--text2); }
   .ai-feed-empty { color: var(--text3); font-size: 11px; padding: 8px; }
 
-  .ai-feed-row { display: grid; grid-template-columns: 56px 70px 56px 80px 1fr auto 70px; gap: 8px; padding: 5px 8px; border-radius: 6px; font-size: 11px; align-items: center; }
+  .ai-feed-row {
+    display: grid;
+    grid-template-columns: 52px 66px 42px 72px minmax(0, max-content) minmax(0, 1fr);
+    gap: 6px 10px; padding: 5px 8px; border-radius: 6px; font-size: 11px; align-items: center;
+  }
   .ai-feed-row:hover { background: var(--bg3); }
   .ai-feed-time { font-family: var(--mono); color: var(--text3); font-size: 10px; display: flex; align-items: center; gap: 3px; }
   .ai-feed-type { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 3px; background: var(--bg3); color: var(--text2); text-align: center; }
@@ -2201,12 +2219,16 @@
   .ai-feed-stat.pct .val.down { color: var(--red); }
   .ai-feed-stat.rv .val.hot { color: var(--amber); font-weight: 700; }
   .ai-feed-stat.rv .val.cold { color: var(--text3); }
-  .ai-feed-tags { display: flex; gap: 3px; flex-wrap: nowrap; overflow: hidden; }
+  .ai-feed-tags { display: flex; gap: 3px; flex-wrap: wrap; overflow: hidden; }
+  .ai-feed-trailing {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    justify-content: flex-start; justify-self: start; min-width: 0;
+  }
   .ai-feed-tag-chip { font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 3px; background: var(--bg3); color: var(--text2); white-space: nowrap; }
   .ai-feed-tag-chip.kn { color: var(--green); background: var(--green-dim); }
   .ai-feed-tag-chip.sq { color: var(--amber); background: var(--amber-dim); }
   .ai-feed-tag-chip.bk { color: var(--blue); background: var(--blue-dim); }
-  .ai-feed-tag { font-family: var(--mono); font-size: 10px; padding: 1px 6px; border-radius: 3px; text-align: center; white-space: nowrap; }
+  .ai-feed-tag { font-family: var(--mono); font-size: 10px; padding: 1px 6px; border-radius: 3px; text-align: center; white-space: nowrap; flex-shrink: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
   .ai-feed-tag.skip { color: var(--text3); background: var(--bg3); }
   .ai-feed-tag.trade { color: var(--green); background: var(--green-dim); font-weight: 700; }
   .ai-feed-tag.watch { color: var(--amber); background: var(--amber-dim); }
@@ -2432,6 +2454,10 @@
     }
     .ai-feed-row > * {
       width: 100%;
+    }
+    .ai-feed-trailing {
+      width: 100%;
+      justify-content: flex-start;
     }
     .ai-watch-hist-cols,
     .ai-watch-hist-row,
@@ -3646,18 +3672,44 @@ function _aiFeedRow(m) {
       ${rankHtml}
       <span class="ai-feed-ticker">${m.ticker || '—'}</span>
       <span class="ai-feed-stats">${stats.join('')}</span>
-      <span class="ai-feed-tags">${tagsHtml}</span>
-      <span class="ai-feed-tag ${cls}">${tag}</span>
+      <span class="ai-feed-trailing">
+        <span class="ai-feed-tags">${tagsHtml}</span>
+        <span class="ai-feed-tag ${cls}">${tag}</span>
+      </span>
     </div>
   `;
 }
 
-function _aiFeedSection(title, items, cls) {
+function _aiFeedSectionCollapsed(key) {
+  try {
+    const o = JSON.parse(localStorage.getItem('aiFeedSections') || '{}');
+    return o[key] === true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function _aiFeedSetSectionCollapsed(key, collapsed) {
+  try {
+    const o = JSON.parse(localStorage.getItem('aiFeedSections') || '{}');
+    o[key] = !!collapsed;
+    localStorage.setItem('aiFeedSections', JSON.stringify(o));
+  } catch (e) { /* noop */ }
+}
+
+function _aiFeedSection(title, items, cls, sectionKey) {
   if (!items.length) return '';
+  const collapsed = _aiFeedSectionCollapsed(sectionKey);
   return `
-    <div class="ai-feed-section ${cls}">
-      <div class="ai-feed-section-head">${title}<span class="count">${items.length}</span></div>
-      ${items.map(_aiFeedRow).join('')}
+    <div class="ai-feed-section ${cls}${collapsed ? ' collapsed' : ''}" data-feed-section="${sectionKey}">
+      <button type="button" class="ai-feed-section-head" aria-expanded="${collapsed ? 'false' : 'true'}">
+        <span class="ai-feed-section-chevron">▼</span>
+        <span class="ai-feed-section-title">${title}</span>
+        <span class="count">${items.length}</span>
+      </button>
+      <div class="ai-feed-section-body">
+        ${items.map(_aiFeedRow).join('')}
+      </div>
     </div>
   `;
 }
@@ -3709,9 +3761,9 @@ function _aiFeedRender() {
   }
 
   root.innerHTML = [
-    _aiFeedSection('Active', active, 'action'),
-    _aiFeedSection('Trade', trade, 'trade'),
-    _aiFeedSection('Filtered out', filtered, 'filtered'),
+    _aiFeedSection('Active', active, 'action', 'active'),
+    _aiFeedSection('Trade', trade, 'trade', 'trade'),
+    _aiFeedSection('Filtered out', filtered, 'filtered', 'filtered'),
   ].join('') || `<div class="ai-feed-empty">${filter ? 'No alerts for ' + filter : 'No scanner messages yet'}</div>`;
 }
 
@@ -3720,6 +3772,18 @@ function _aiFeedWire() {
   if (root && !root._wired) {
     root._wired = true;
     root.addEventListener('click', (e) => {
+      const head = e.target.closest('.ai-feed-section-head');
+      if (head) {
+        const sec = head.closest('.ai-feed-section');
+        const key = sec && sec.dataset.feedSection;
+        if (key) {
+          sec.classList.toggle('collapsed');
+          const collapsed = sec.classList.contains('collapsed');
+          head.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+          _aiFeedSetSectionCollapsed(key, collapsed);
+        }
+        return;
+      }
       const row = e.target.closest('.ai-feed-row.clickable');
       if (!row) return;
       const id = row.getAttribute('data-alert-id');
