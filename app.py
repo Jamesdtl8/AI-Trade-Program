@@ -57,6 +57,13 @@ def health():
     return jsonify(ok=True, service="AI_Trade_Program")
 
 
+@app.get("/api/time")
+def api_time():
+    import time as _time
+
+    return jsonify(ok=True, utc_ms=int(_time.time() * 1000))
+
+
 _exec_ns = {
     "__name__": "ai_trade_flask_routes",
     "app": app,

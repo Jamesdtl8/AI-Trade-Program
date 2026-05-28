@@ -1285,3 +1285,58 @@ async def place_market(ticker: str, quantity: float) -> dict[str, Any]:
                     qty = bumped
                     continue
             raise
+
+
+async def fetch_active_orders() -> list[dict[str, Any]]:
+    if not config.t212_credentials_ok():
+        return []
+    res = await request("GET", "/equity/orders")
+    if isinstance(res, list):
+        return [x for x in res if isinstance(x, dict)]
+    return []
+
+
+async def cancel_all_active_orders() -> int:
+    orders = await fetch_active_orders()
+    n = 0
+    for o in orders:
+        oid = o.get("id")
+        if oid in (None, "", 0):
+            continue
+        try:
+            await cancel_order(oid)
+            n += 1
+        except Exception as exc:
+            _log.warning("cancel_all_active_orders id=%s: %s", oid, exc)
+    return n
+
+
+async def close_all_positions_market() -> list[dict[str, Any]]:
+    """Market-sell every open long on the AI T212 account."""
+    if not config.t212_credentials_ok():
+        return []
+    try:
+        raw = await request("GET", "/equity/positions")
+        rows = raw if isinstance(raw, list) else []
+    except Exception as exc:
+        _log.warning("close_all_positions_market positions fetch: %s", exc)
+        rows = await get_positions(bypass_cache=True)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        tk = str(row.get("ticker") or "").strip()
+        try:
+            qty = float(row.get("quantity") or 0.0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if not tk or qty <= 1e-6:
+            continue
+        sell_signed = -round_qty(snap_quantity(qty, quantity_precision(tk)))
+        try:
+            res = await place_market(tk, sell_signed)
+            out.append({"ticker": tk, "quantity": sell_signed, "result": res})
+        except Exception as exc:
+            out.append({"ticker": tk, "error": str(exc)})
+            _log.warning("close_all_positions_market %s failed: %s", tk, exc)
+    return out

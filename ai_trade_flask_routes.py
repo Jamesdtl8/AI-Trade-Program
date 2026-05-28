@@ -64,24 +64,28 @@ def api_ai_status():
     )
     cash = _ai_cash_cached()
     gemini_usage_payload: dict = {}
+    ai_usage_payload: dict = {}
     try:
-        import datetime as _dt
-
-        day0 = (
-            _dt.datetime.now(_dt.timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .timestamp()
-        )
-        all_s = db.gemini_usage_stats_since(0.0)
-        day_s = db.gemini_usage_stats_since(day0)
+        all_s = db.combined_llm_usage_stats_since(0.0)
+        day_s = db.combined_llm_usage_stats_since(day0)
         gemini_usage_payload = {
+            "usage_gbp_total": round(float(all_s["gemini_gbp"]), 2),
+            "usage_gbp_today": round(float(day_s["gemini_gbp"]), 2),
+            "usage_calls_total": int(all_s["calls"]),
+            "usage_calls_today": int(day_s["calls"]),
+        }
+        ai_usage_payload = {
             "usage_gbp_total": round(float(all_s["sum_gbp"]), 2),
             "usage_gbp_today": round(float(day_s["sum_gbp"]), 2),
             "usage_calls_total": int(all_s["calls"]),
             "usage_calls_today": int(day_s["calls"]),
+            "openai_gbp_total": round(float(all_s["openai_gbp"]), 2),
+            "openai_gbp_today": round(float(day_s["openai_gbp"]), 2),
+            "gemini_gbp_total": round(float(all_s["gemini_gbp"]), 2),
+            "gemini_gbp_today": round(float(day_s["gemini_gbp"]), 2),
         }
     except Exception as _exc:
-        _log.debug("gemini usage on ai status: %s", _exc)
+        _log.debug("llm usage on ai status: %s", _exc)
     return jsonify(
         ok=True,
         engine=eng.status(),
@@ -99,6 +103,7 @@ def api_ai_status():
         rejected_today=int(rejected_today["c"]) if rejected_today else 0,
         cash=cash,
         gemini_usage=gemini_usage_payload,
+        ai_usage=ai_usage_payload,
     )
 
 
@@ -516,6 +521,10 @@ def api_ai_feed():
         if tk:
             ticker_latest[tk] = (lr["score"], lr["decision"])
 
+    from ai_sandbox.grader import state as grader_state
+
+    state_map = grader_state.all_for_date(db.uk_date_iso())
+
     items = []
     for r in rows:
         d = dict(r)
@@ -531,6 +540,13 @@ def api_ai_feed():
         eff_score, eff_decision = alert_score, alert_decision
         if tk and tk in ticker_latest:
             eff_score, eff_decision = ticker_latest[tk]
+        st_row = state_map.get(tk) if tk else None
+        active_label = grader_state.ui_label(st_row) if st_row else None
+        grader_st = st_row.get("state") if st_row else None
+        disqualify = st_row.get("disqualify_reason") if st_row else None
+        filter_reason = None if d["score"] is not None else _filter_hint(parsed)
+        if st_row and str(st_row.get("state") or "") in ("PASS", "DISQUALIFIED"):
+            filter_reason = disqualify or ("ai_pass" if st_row.get("state") == "PASS" else "disqualified")
         items.append(
             {
                 "alert_id": d["alert_id"],
@@ -543,7 +559,10 @@ def api_ai_feed():
                 "decision": eff_decision,
                 "alert_score": alert_score,
                 "alert_decision": alert_decision,
-                "filter_reason": None if d["score"] is not None else _filter_hint(parsed),
+                "filter_reason": filter_reason,
+                "grader_state": grader_st,
+                "active_label": active_label,
+                "disqualify_reason": disqualify,
                 "parsed": {
                     "price": parsed.get("price"),
                     "pct": parsed.get("pct"),
@@ -1046,6 +1065,50 @@ def api_ai_news_history_detail(nid: int):
     except Exception as exc:
         _log.debug("news_history detail display ticker enrich failed: %s", exc)
     return jsonify(ok=True, log=h, scores_for_alert=sf)
+
+
+@app.post("/api/ai/admin/wipe-all")
+def api_ai_admin_wipe_all():
+    """Option C: cancel T212 orders, market-close positions, wipe SQLite + feeds."""
+    import asyncio as _asyncio
+
+    from ai_sandbox import db as _wdb, service as _ai_svc, t212_ai
+
+    payload = request.get_json(silent=True) or {}
+    if not payload.get("confirm"):
+        return jsonify(ok=False, error="confirm_required"), 400
+
+    loop = _ai_svc._loop
+    cancelled = 0
+    closed: list = []
+    if loop is not None:
+        try:
+            cancelled = _asyncio.run_coroutine_threadsafe(
+                t212_ai.cancel_all_active_orders(), loop
+            ).result(timeout=120)
+        except Exception as exc:
+            _log.warning("wipe-all cancel orders: %s", exc)
+        try:
+            closed = _asyncio.run_coroutine_threadsafe(
+                t212_ai.close_all_positions_market(), loop
+            ).result(timeout=180)
+        except Exception as exc:
+            _log.warning("wipe-all close positions: %s", exc)
+
+    _wdb.wipe_ai_trade_state()
+    eng = _ai_svc.get_engine()
+    if eng is not None:
+        try:
+            eng.reset_after_wipe()
+        except Exception as exc:
+            _log.warning("engine reset_after_wipe: %s", exc)
+
+    return jsonify(
+        ok=True,
+        cancelled_orders=cancelled,
+        closed_positions=len(closed),
+        closed_detail=closed,
+    )
 
 
 @app.post("/api/ai/toggle")

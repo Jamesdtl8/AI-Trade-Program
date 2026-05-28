@@ -2119,7 +2119,7 @@
 ════════════════════════════════════════════════════════════ -->
 <style>
   .ai-page { padding: 18px; display: flex; flex-direction: column; gap: 16px; max-width: 1700px; margin: 0 auto; }
-  .ai-strip { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 10px; }
+  .ai-strip { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 10px; }
   .ai-stat { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; min-width: 0; }
   .ai-stat-lbl { font-size: 10px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.6px; }
   .ai-stat-val { font-family: var(--mono); font-size: 18px; font-weight: 700; margin-top: 4px; color: var(--text); }
@@ -2175,7 +2175,7 @@
   .ai-feed-section-head .count { color: var(--text2); background: var(--bg3); border-radius: 3px; padding: 1px 6px; font-size: 9px; }
   .ai-feed-section.action .ai-feed-section-head { color: var(--green); border-bottom-color: var(--green-dim); }
   .ai-feed-section.event  .ai-feed-section-head { color: var(--amber); border-bottom-color: var(--amber-dim); }
-  .ai-feed-section.filtered .ai-feed-section-head { color: var(--text3); }
+  .ai-feed-section.trade .ai-feed-section-head { color: var(--green); border-bottom-color: var(--green-dim); }
   .ai-feed-empty { color: var(--text3); font-size: 11px; padding: 8px; }
 
   .ai-feed-row { display: grid; grid-template-columns: 56px 70px 56px 80px 1fr auto 70px; gap: 8px; padding: 5px 8px; border-radius: 6px; font-size: 11px; align-items: center; }
@@ -2697,11 +2697,15 @@
       <div class="ai-stat"><div class="ai-stat-lbl">Account Value</div><div class="ai-stat-val" id="ai-stat-cash">—</div><div class="ai-stat-sub" id="ai-stat-cash-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Today P&amp;L</div><div class="ai-stat-val" id="ai-stat-pnl">—</div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Open / Closed / Rejected</div><div class="ai-stat-val" id="ai-stat-counts">—</div><div class="ai-stat-sub" id="ai-stat-blocked-sub"></div></div>
+      <div class="ai-stat"><div class="ai-stat-lbl">AI Cost (today)</div><div class="ai-stat-val" id="ai-stat-ai-cost">—</div><div class="ai-stat-sub" id="ai-stat-ai-cost-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Scanner / Scored</div><div class="ai-stat-val" id="ai-stat-scan">—</div></div>
     </div>
 
     <div>
-      <div class="ai-section-title"><span class="dot"></span> Active Slots <button type="button" class="ai-toggle" id="ai-trading-toggle" title="When OFF, AI Trade is fully idle (scanners, Gemini, monitors). Does not affect the Discord bot.">Trading OFF</button></div>
+      <div class="ai-section-title"><span class="dot"></span> Active Slots
+        <button type="button" class="ai-toggle" id="ai-trading-toggle" title="When OFF, AI Trade is fully idle (scanners, GPT grader, monitors). Does not affect the Discord bot.">Trading OFF</button>
+        <button type="button" class="ai-toggle" id="ai-wipe-all-btn" title="Wipe SQLite + feeds, cancel T212 orders, market-close all positions (keeps blacklist).">Start fresh</button>
+      </div>
       <div class="ai-slots" id="ai-slots"></div>
     </div>
 
@@ -3555,6 +3559,23 @@ function _aiRenderStatus(s) {
   const sub = $('ai-stat-blocked-sub');
   if (sub) sub.innerHTML = '';
   $('ai-stat-scan').textContent = (eng.scanner_recent_count || 0) + ' / ' + (eng.scored || 0);
+  const aiUse = s.ai_usage || s.gemini_usage || {};
+  const costToday = Number(aiUse.usage_gbp_today != null ? aiUse.usage_gbp_today : 0);
+  const costTotal = Number(aiUse.usage_gbp_total != null ? aiUse.usage_gbp_total : 0);
+  const costEl = $('ai-stat-ai-cost');
+  if (costEl) {
+    costEl.textContent = '£' + costToday.toFixed(2);
+    costEl.title = 'OpenAI + Gemini estimated API cost (UK day)';
+  }
+  const costSub = $('ai-stat-ai-cost-sub');
+  if (costSub) {
+    const oa = aiUse.openai_gbp_today != null ? Number(aiUse.openai_gbp_today) : null;
+    const gm = aiUse.gemini_gbp_today != null ? Number(aiUse.gemini_gbp_today) : null;
+    let subTxt = 'All time £' + costTotal.toFixed(2);
+    if (oa != null && !Number.isNaN(oa)) subTxt += ' · GPT £' + oa.toFixed(2);
+    if (gm != null && !Number.isNaN(gm)) subTxt += ' · Gemini £' + gm.toFixed(2);
+    costSub.textContent = subTxt;
+  }
   const toggle = $('ai-trading-toggle');
   if (toggle) {
     toggle.classList.toggle('on', !!eng.enabled);
@@ -3656,23 +3677,55 @@ function _aiTagChip(t) {
   return `<span class="ai-feed-tag-chip ${cls}">${short}</span>`;
 }
 
+function _aiHumanReason(code) {
+  if (!code) return '—';
+  const map = {
+    stop_loss_10pct: 'Hit Stop Loss 10%',
+    trail_breach: 'Trailing Stop Hit',
+    tp_market: 'Take Profit (market sell)',
+    slots_full: 'Unable due to Slots Full',
+    float_too_large: 'Disqualified — float over 50M',
+    mc_too_large: 'Disqualified — market cap over $100M',
+    price_too_low: 'Disqualified — price below $0.10',
+    rv_too_low: 'Disqualified — RV below 1x',
+    offering_present: 'Disqualified — offering',
+    nbreak_at_3: 'Disqualified — NBREAK',
+    ai_pass: 'AI Pass',
+    disqualified: 'Disqualified',
+    halt: 'Filtered — halt',
+    offering: 'Filtered — offering',
+  };
+  const k = String(code);
+  if (map[k]) return map[k];
+  if (k.startsWith('blacklist:')) return 'Filtered — T212 blacklist';
+  if (k.startsWith('paused:')) return 'Paused — ' + k.slice(7);
+  if (k.startsWith('rv<')) return 'Filtered — RV below ' + k.slice(3);
+  return k.replace(/_/g, ' ');
+}
+
 function _aiFeedRow(m) {
   const t = m.ts ? new Date(m.ts * 1000) : null;
   const time = t ? t.toLocaleTimeString('en-GB', { hour12: false }) : '—';
   const type = m.type || 'UNKNOWN';
   const p = m.parsed || {};
-  const isAction = m.decision === 'TRADE' || m.decision === 'WATCH' || m.decision === 'WATCH-NEWS';
-  const isEvent = type === 'HALT' || type === 'OFFERING' || type === 'FIRE' || type === 'WHALE';
-  const killed = !!(m.filter_reason && m.filter_reason !== 'ok' && !isEvent);
+  const label = m.active_label || '';
+  const isTrade = m.decision === 'TRADE' || label === 'TRADE' || m.grader_state === 'TRADE';
+  const isFiltered = label === 'FILTERED' || m.decision === 'SKIP' || (
+    m.filter_reason && m.filter_reason !== 'ok' && !isTrade
+  );
 
-  let tag = '', cls = 'skip';
-  if (m.decision === 'TRADE') { tag = 'TRADE ' + (m.score || ''); cls = 'trade'; }
-  else if (m.decision === 'WATCH-NEWS') { tag = 'WATCH-NEWS ' + (m.score || ''); cls = 'watch-news'; }
-  else if (m.decision === 'WATCH') { tag = 'WATCH ' + (m.score || ''); cls = 'watch'; }
-  else if (m.score != null) { tag = 'SKIP ' + m.score; cls = 'skip'; }
-  else if (m.filter_reason && m.filter_reason !== 'ok') { tag = m.filter_reason; cls = 'kill'; }
-  else if (m.news_class) { tag = m.news_class; cls = 'news'; }
-  else { tag = '—'; cls = 'skip'; }
+  let tag = label || '';
+  let cls = 'skip';
+  if (isTrade) { tag = tag || 'TRADE'; cls = 'trade'; }
+  else if (tag === 'REVIEW WATCH' || m.decision === 'WATCH') { tag = tag || 'REVIEW WATCH'; cls = 'watch'; }
+  else if (tag === 'REVIEW') { cls = 'watch'; }
+  else if (tag === 'WATCHING') { cls = 'watch-news'; }
+  else if (tag === 'NEW') { cls = 'news'; }
+  else if (isFiltered) {
+    tag = tag || _aiHumanReason(m.filter_reason || m.disqualify_reason || 'ai_pass');
+    cls = 'kill';
+  } else if (m.score != null) { tag = (m.decision || 'SKIP') + ' ' + m.score; cls = 'skip'; }
+  else { tag = tag || 'NEW'; cls = 'news'; }
 
   const rank = p.rank;
   const rankCls = rank == null ? '' : (rank === 1 ? 'r1' : rank === 2 ? 'r2' : rank === 3 ? 'r3' : 'rN');
@@ -3695,7 +3748,7 @@ function _aiFeedRow(m) {
   const tagsHtml = (p.tags || []).slice(0, 4).map(_aiTagChip).join('');
   const newsClass = (p.news_headline || m.news_class) ? 'has-news' : '';
   const rowCls = ['ai-feed-row', m.alert_id ? 'clickable' : '', newsClass,
-                  killed ? 'filtered' : (isEvent && !isAction ? 'event' : '')]
+                  isFiltered ? 'filtered' : (isTrade ? 'trade' : '')]
                  .filter(Boolean).join(' ');
   const info = m.alert_id ? `<i class="ti ti-info-circle ai-feed-info"></i>` : '';
   const titleAttr = (m.raw || '').replace(/"/g,'&quot;');
@@ -3754,20 +3807,24 @@ function _aiFeedRender() {
     return;
   }
 
-  const action = [], scanner = [], events = [], filtered = [];
+  const active = [], trade = [], filtered = [];
   for (const m of items) {
-    const type = m.type || 'UNKNOWN';
-    const isEvent = type === 'HALT' || type === 'OFFERING' || type === 'FIRE' || type === 'WHALE';
-    if (m.decision === 'TRADE' || m.decision === 'WATCH' || m.decision === 'WATCH-NEWS') action.push(m);
-    else if (isEvent) events.push(m);
-    else if (m.filter_reason && m.filter_reason !== 'ok') filtered.push(m);
-    else scanner.push(m);
+    const label = m.active_label || '';
+    const isTrade = m.decision === 'TRADE' || label === 'TRADE' || m.grader_state === 'TRADE';
+    if (isTrade) trade.push(m);
+    else if (
+      label === 'FILTERED' || m.decision === 'SKIP' ||
+      (m.filter_reason && m.filter_reason !== 'ok')
+    ) filtered.push(m);
+    else if (['NEW', 'WATCHING', 'REVIEW', 'REVIEW WATCH'].includes(label)) active.push(m);
+    else if (m.type === 'SCANNER' && !m.filter_reason) active.push(m);
+    else if (m.filter_reason) filtered.push(m);
+    else active.push(m);
   }
 
   root.innerHTML = [
-    _aiFeedSection('Action · TRADE / WATCH', action, 'action'),
-    _aiFeedSection('Scanner · scored', scanner, 'scanner'),
-    _aiFeedSection('Events · halt / offering / fire / whale', events, 'event'),
+    _aiFeedSection('Active', active, 'action'),
+    _aiFeedSection('Trade', trade, 'trade'),
     _aiFeedSection('Filtered out', filtered, 'filtered'),
   ].join('') || `<div class="ai-feed-empty">${filter ? 'No alerts for ' + filter : 'No scanner messages yet'}</div>`;
 }
@@ -4101,11 +4158,11 @@ function _aiRenderTradeRow(t) {
       ? escapeHtml(String(t.t212_error).slice(0, 160))
       : '';
     const reasonHtml = rej
-      ? `${escapeHtml(String((t.exit_reason || 'Rejected').trim()))}` +
+      ? `${escapeHtml(_aiHumanReason((t.exit_reason || 'Rejected').trim()))}` +
         (errSnippet ? ` <span style="color:var(--text3);font-size:9px;">${errSnippet}…</span>` : '')
       : isPending
         ? 'SELL PENDING'
-        : escapeHtml(String((t.exit_reason || t.status || '—')).trim());
+        : escapeHtml(_aiHumanReason(String((t.exit_reason || t.status || '—')).trim()));
     const reasonTitle = rej
       ? String(t.t212_error || t.exit_reason || '')
           .replace(/&/g, '&amp;')
@@ -4965,6 +5022,31 @@ function showPage(name) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  _initMarketClock();
+  const wipeBtn = $('ai-wipe-all-btn');
+  if (wipeBtn && !wipeBtn._wired) {
+    wipeBtn._wired = true;
+    wipeBtn.addEventListener('click', async () => {
+      if (!confirm('Start fresh? Wipes SQLite + scanner feeds, cancels all T212 orders, and market-closes every open position. T212 blacklist is kept.')) return;
+      if (!confirm('Final confirm — proceed with full wipe?')) return;
+      wipeBtn.disabled = true;
+      try {
+        const r = await fetch('/api/ai/admin/wipe-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirm: true }),
+        });
+        const j = await r.json();
+        if (!r.ok || !j.ok) alert('Wipe failed: ' + (j.error || r.status));
+        else alert('Wipe complete. Cancelled ' + (j.cancelled_orders || 0) + ' orders; closed ' + (j.closed_positions || 0) + ' positions.');
+        if (typeof _aiTick === 'function') _aiTick();
+      } catch (e) {
+        alert('Wipe failed: ' + e);
+      } finally {
+        wipeBtn.disabled = false;
+      }
+    });
+  }
   document.querySelectorAll('#navTabs .nav-tab').forEach((tab) => {
     tab.addEventListener('click', () => {
       const nav = tab.getAttribute('data-nav');
@@ -4981,6 +5063,112 @@ document.addEventListener('DOMContentLoaded', () => {
   restoreNavTabIfStored();
   if (!document.querySelector('.page-view.page-active')) showPage('ai-trade');
 });
+
+const _marketClock = { skewMs: 0 };
+
+async function _syncClockFromServer() {
+  try {
+    const t0 = Date.now();
+    const r = await fetch('/api/time', { credentials: 'same-origin' });
+    const j = await r.json();
+    if (!r.ok || !j.ok || typeof j.utc_ms !== 'number') return;
+    const t1 = Date.now();
+    const mid = t0 + (t1 - t0) / 2;
+    _marketClock.skewMs = Math.round(j.utc_ms - mid);
+  } catch (_) { /* keep skew */ }
+}
+
+function _alignedNowMs() {
+  return Date.now() + _marketClock.skewMs;
+}
+
+function _getNYParts() {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(_alignedNowMs()));
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  const day = get('weekday');
+  const hour = parseInt(get('hour'), 10);
+  const minute = parseInt(get('minute'), 10);
+  const second = parseInt(get('second'), 10);
+  const isWeekend = day === 'Sat' || day === 'Sun';
+  return { day, hour, minute, second, isWeekend, mins: hour * 60 + minute };
+}
+
+function _detectSession() {
+  const { isWeekend, mins } = _getNYParts();
+  if (isWeekend) return 'closed';
+  if (mins >= 4 * 60 && mins < 9 * 60 + 30) return 'pre';
+  if (mins >= 9 * 60 + 30 && mins < 16 * 60) return 'regular';
+  if (mins >= 16 * 60 && mins < 20 * 60) return 'after';
+  return 'closed';
+}
+
+function _nextSessionBoundary() {
+  const { mins } = _getNYParts();
+  const sess = _detectSession();
+  let target;
+  let label;
+  if (sess === 'pre') { target = 9 * 60 + 30; label = 'Open'; }
+  else if (sess === 'regular') { target = 16 * 60; label = 'Close'; }
+  else if (sess === 'after') { target = 20 * 60; label = 'Close'; }
+  else { target = 4 * 60; label = 'Pre'; }
+  let diff = target - mins;
+  if (diff <= 0) diff += 24 * 60;
+  return { mins: diff, label };
+}
+
+function _formatCountdown(mins) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
+function _updateMarketHeader() {
+  const el = $('marketStatusEl');
+  const lbl = $('marketLabel');
+  const cd = $('sessionCountdown');
+  if (!el || !lbl) return;
+  const sess = _detectSession();
+  el.className = 'market-status ' + sess;
+  const labels = { pre: 'Pre-Market', regular: 'Market Open', after: 'After Hours', closed: 'Market Closed' };
+  lbl.textContent = labels[sess] || 'Market';
+  if (cd) {
+    if (sess === 'closed') {
+      cd.textContent = '';
+      cd.style.display = 'none';
+    } else {
+      const b = _nextSessionBoundary();
+      cd.textContent = b.label + ' in ' + _formatCountdown(b.mins);
+      cd.style.display = 'inline';
+    }
+  }
+}
+
+function _updateClock() {
+  const el = $('clock');
+  if (!el) return;
+  const now = new Date(_alignedNowMs());
+  const et = now.toLocaleTimeString('en-GB', { timeZone: 'America/New_York', hour12: false });
+  const uk = now.toLocaleTimeString('en-GB', { timeZone: 'Europe/London', hour12: false });
+  el.textContent = et + ' ET · ' + uk + ' UK';
+}
+
+function _initMarketClock() {
+  _syncClockFromServer();
+  _updateClock();
+  _updateMarketHeader();
+  setInterval(_updateClock, 1000);
+  setInterval(_updateMarketHeader, 1000);
+  setInterval(_syncClockFromServer, 60000);
+}
 
 </script>
 </body>

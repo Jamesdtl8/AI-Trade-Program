@@ -150,6 +150,58 @@ CREATE TABLE IF NOT EXISTS gemini_usage_log (
 );
 CREATE INDEX IF NOT EXISTS idx_gemini_usage_ts ON gemini_usage_log(ts DESC);
 
+CREATE TABLE IF NOT EXISTS openai_usage_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts REAL NOT NULL,
+  source TEXT NOT NULL,
+  call_kind TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input_tokens INTEGER DEFAULT 0,
+  output_tokens INTEGER DEFAULT 0,
+  total_tokens INTEGER DEFAULT 0,
+  cost_gbp REAL NOT NULL,
+  extra_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_openai_usage_ts ON openai_usage_log(ts DESC);
+
+CREATE TABLE IF NOT EXISTS ticker_states (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  date TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'NEW',
+  alert_count INTEGER NOT NULL DEFAULT 0,
+  alerts_json TEXT NOT NULL DEFAULT '[]',
+  ai_context_json TEXT,
+  ai_grade TEXT,
+  ai_decision TEXT,
+  entry_price REAL,
+  target_price REAL,
+  disqualify_reason TEXT,
+  float_shares REAL,
+  created_ts REAL NOT NULL,
+  updated_ts REAL NOT NULL,
+  UNIQUE (ticker, date)
+);
+CREATE INDEX IF NOT EXISTS idx_ticker_states_date ON ticker_states(date, ticker);
+
+CREATE TABLE IF NOT EXISTS ai_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  date TEXT NOT NULL,
+  alert_number INTEGER NOT NULL,
+  alert_id INTEGER,
+  ai_input TEXT NOT NULL,
+  ai_output_json TEXT NOT NULL,
+  grade TEXT,
+  action TEXT,
+  entry_price REAL,
+  target_price REAL,
+  latency_ms INTEGER,
+  cost_gbp REAL,
+  ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_decisions_ts ON ai_decisions(ts DESC);
+
 CREATE TABLE IF NOT EXISTS t212_blacklist (
   ticker TEXT PRIMARY KEY,
   reason TEXT NOT NULL,
@@ -490,6 +542,119 @@ def gemini_usage_stats_since(cutoff_ts: float) -> dict[str, Any]:
         "calls": int(row["n"] or 0),
         "input_tokens": int(row["it"] or 0),
         "output_tokens": int(row["ot"] or 0),
+    }
+
+
+def openai_usage_insert(
+    *,
+    source: str,
+    call_kind: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    cost_gbp: float,
+    extra: dict[str, Any] | None = None,
+) -> int:
+    return insert(
+        """INSERT INTO openai_usage_log(
+              ts, source, call_kind, model, input_tokens, output_tokens,
+              total_tokens, cost_gbp, extra_json)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            time.time(),
+            str(source)[:32],
+            str(call_kind)[:64],
+            str(model)[:128],
+            int(max(0, input_tokens)),
+            int(max(0, output_tokens)),
+            int(max(0, total_tokens)),
+            round(float(cost_gbp), 6),
+            json.dumps(extra, ensure_ascii=False) if extra else None,
+        ),
+    )
+
+
+def openai_usage_stats_since(cutoff_ts: float) -> dict[str, Any]:
+    row = fetchone(
+        """SELECT COUNT(*) AS n,
+                  COALESCE(SUM(cost_gbp), 0) AS gbp,
+                  COALESCE(SUM(input_tokens), 0) AS it,
+                  COALESCE(SUM(output_tokens), 0) AS ot
+             FROM openai_usage_log WHERE ts >= ?""",
+        (float(cutoff_ts),),
+    )
+    if not row:
+        return {"sum_gbp": 0.0, "calls": 0, "input_tokens": 0, "output_tokens": 0}
+    return {
+        "sum_gbp": float(row["gbp"] or 0),
+        "calls": int(row["n"] or 0),
+        "input_tokens": int(row["it"] or 0),
+        "output_tokens": int(row["ot"] or 0),
+    }
+
+
+def uk_date_iso(ts: float | None = None) -> str:
+    import datetime as _dt
+
+    t = float(ts if ts is not None else time.time())
+    tz = _dt.timezone.utc
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("Europe/London")
+    except Exception:
+        pass
+    return _dt.datetime.fromtimestamp(t, tz=tz).date().isoformat()
+
+
+def ai_decision_insert(
+    *,
+    ticker: str,
+    alert_number: int,
+    alert_id: int | None,
+    ai_input: str,
+    ai_output: dict[str, Any],
+    grade: str,
+    action: str,
+    entry_price: Any,
+    target_price: Any,
+    latency_ms: int,
+    cost_gbp: float,
+) -> int:
+    return insert(
+        """INSERT INTO ai_decisions(
+              ticker, date, alert_number, alert_id, ai_input, ai_output_json,
+              grade, action, entry_price, target_price, latency_ms, cost_gbp, ts)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            ticker.upper(),
+            uk_date_iso(),
+            int(alert_number),
+            alert_id,
+            ai_input,
+            json.dumps(ai_output, default=str),
+            grade,
+            action,
+            entry_price,
+            target_price,
+            int(latency_ms),
+            round(float(cost_gbp), 6),
+            time.time(),
+        ),
+    )
+
+
+def combined_llm_usage_stats_since(cutoff_ts: float) -> dict[str, Any]:
+    g = gemini_usage_stats_since(cutoff_ts)
+    o = openai_usage_stats_since(cutoff_ts)
+    return {
+        "sum_gbp": round(float(g["sum_gbp"]) + float(o["sum_gbp"]), 6),
+        "calls": int(g["calls"]) + int(o["calls"]),
+        "input_tokens": int(g["input_tokens"]) + int(o["input_tokens"]),
+        "output_tokens": int(g["output_tokens"]) + int(o["output_tokens"]),
+        "gemini_gbp": float(g["sum_gbp"]),
+        "openai_gbp": float(o["sum_gbp"]),
     }
 
 
@@ -1316,6 +1481,9 @@ def wipe_all_tables() -> None:
         "news_scanner_log",
         "offering_blocks",
         "gemini_usage_log",
+        "openai_usage_log",
+        "ticker_states",
+        "ai_decisions",
         "news_web_search_quota",
         "news_web_search_ticker_cool",
     )

@@ -150,8 +150,56 @@ def parse(content: str) -> dict[str, Any]:
         tags = _scanner_tags(content)
         if tags:
             out["tags"] = tags
+        lbl = _scanner_label(content)
+        if lbl:
+            out["label"] = lbl
+        out["indicators"] = _scanner_indicators(content)
+        if _OFFERING_RE.search(content):
+            out["has_offering"] = True
 
     return out
+
+
+_LABEL_RE = re.compile(
+    r"`#(\d+)`\s*·\s*`([^`]+)`",
+    re.IGNORECASE,
+)
+
+
+def _scanner_label(content: str) -> str | None:
+    first = content.split("\n", 1)[0]
+    m = _LABEL_RE.search(first)
+    if not m:
+        return None
+    raw = m.group(2).strip()
+    upper = raw.upper()
+    if upper.startswith("MOMENTUM"):
+        return "MOMENTUM"
+    if upper.startswith("BREAKOUT"):
+        return "BREAKOUT"
+    if upper.startswith("NBREAK"):
+        return "NBREAK"
+    if upper.startswith("REV"):
+        return "REV V"
+    if upper.startswith("BTT"):
+        return "BTT V"
+    if re.search(r"^[↑↓]", raw):
+        return None
+    return raw.split()[0] if raw else None
+
+
+def _scanner_indicators(content: str) -> list[str]:
+    first = content.split("\n", 1)[0]
+    inds: list[str] = []
+    if _BORROW_RE.search(first):
+        inds.append("0 Borrow")
+    if re.search(r"Reg\s*SHO", first, re.IGNORECASE):
+        inds.append("Reg SHO")
+    if re.search(r"Potential\s+Squeeze", first, re.IGNORECASE):
+        inds.append("Potential Squeeze")
+    if re.search(r"Known\s+Runner", first, re.IGNORECASE):
+        inds.append("Known Runner")
+    return inds
 
 
 _TAG_PHRASES: tuple[tuple[re.Pattern[str], str], ...] = (

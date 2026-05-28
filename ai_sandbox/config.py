@@ -79,8 +79,37 @@ def gemini_api_key() -> str:
 
 
 def openai_api_key() -> str:
-    """OpenAI key for Reasoning Test lab (``responses.create``)."""
+    """OpenAI key for Reasoning Test lab and scanner grader (``responses.create``)."""
     return _env("OPENAI_API_KEY")
+
+
+def openai_model_grader() -> str:
+    return _env("OPENAI_MODEL") or _env("AI_OPENAI_MODEL") or "gpt-5-nano"
+
+
+def openai_token_price_usd_per_million(model: str) -> tuple[float, float]:
+    """Return (input USD per 1M tokens, output USD per 1M) for billing estimates."""
+    m = (model or "").strip().lower()
+    raw = _env("AI_OPENAI_PRICE_TABLE_JSON")
+    if raw:
+        try:
+            table = json.loads(raw)
+            for key in (m, m.rsplit("/", 1)[-1] if m else ""):
+                if key and key in table and isinstance(table[key], dict):
+                    e = table[key]
+                    return float(e["in"]), float(e["out"])
+            if isinstance(table.get("default"), dict):
+                e = table["default"]
+                return float(e["in"]), float(e["out"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            pass
+    if "gpt-5-nano" in m:
+        return 0.05, 0.40
+    if "gpt-5-mini" in m:
+        return 0.25, 2.00
+    if m.startswith("gpt-5"):
+        return 1.25, 10.00
+    return 0.50, 2.00
 
 
 def gemini_model_scorer() -> str:

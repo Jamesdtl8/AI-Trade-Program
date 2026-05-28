@@ -15,7 +15,7 @@ import logging
 import time
 from typing import Any
 
-from . import config, db, t212_ai
+from . import config, db, t212_ai, trail_stop
 from .slot_manager import Slot, SlotManager
 
 _log = logging.getLogger("ai_sandbox.position_monitor")
@@ -151,6 +151,7 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
     entry = float(setup["entry"])
     tp = float(setup["tp"])
     stop_loss_pct = float(config.MAX_STOP_LOSS_PCT)
+    highest = float(setup.get("highest_price") or entry)
 
     while True:
         try:
@@ -181,7 +182,6 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
             broker_entry = await t212_ai.position_average_entry_usd(ticker, bypass_cache=False)
             if broker_entry is not None and broker_entry > 0:
                 entry = round(float(broker_entry), 6)
-                tp = config.profit_target_price(entry)
 
             pos_row = await t212_ai.position_row_for_ticker(ticker, bypass_cache=False)
             if pos_row:
@@ -197,11 +197,29 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                 unreal_pct = (price - entry) / entry * 100.0
 
             if unreal_pct is not None:
+                if price > highest:
+                    highest = price
+                    setup["highest_price"] = highest
+                stop_level, trail_active, trail_pct = trail_stop.calculate_stop(
+                    entry,
+                    highest,
+                    float(unreal_pct),
+                    hard_stop_pct=stop_loss_pct,
+                )
+                trail_note = (
+                    f" trail={trail_pct}% stop={stop_level:.4f}"
+                    if trail_active
+                    else f" hard={stop_level:.4f}"
+                )
                 await mgr.update_slot_pnl(
                     slot,
                     price,
                     unreal_pct,
-                    f"pnl={unreal_pct:.2f}% tp={tp:.4f}",
+                    f"pnl={unreal_pct:.2f}%{trail_note}",
+                )
+            else:
+                stop_level, trail_active, trail_pct = trail_stop.calculate_stop(
+                    entry, highest, 0.0, hard_stop_pct=stop_loss_pct
                 )
 
             stop_grace_until = float(setup.get("stop_grace_until") or 0.0)
@@ -222,27 +240,31 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                         "unreal_pct": unreal_pct,
                         "stop_loss_pct": stop_loss_pct,
                         "broker_entry": entry,
-                        "tp_target": tp,
+                        "highest_price": highest,
                     },
                 ):
                     continue
                 return
 
-            # Take profit: +7.5% unrealized → market sell (all sessions).
+            # Trailing stop ladder (activates from +7.5%).
             if (
                 not _paper_mode()
-                and unreal_pct is not None
-                and unreal_pct >= config.AI_TAKE_PROFIT_PCT
+                and trail_active
+                and price > 0
+                and price <= stop_level
+                and not (stop_grace_until > 0 and time.time() < stop_grace_until)
             ):
                 if await _send_market_sell(
                     slot,
                     mgr,
                     ticker,
                     price,
-                    "tp_market",
+                    "trail_breach",
                     audit_extra={
                         "unreal_pct": unreal_pct,
-                        "take_profit_pct": config.AI_TAKE_PROFIT_PCT,
+                        "trail_pct": trail_pct,
+                        "stop_level": stop_level,
+                        "highest_price": highest,
                         "broker_entry": entry,
                     },
                 ):

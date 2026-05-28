@@ -11,8 +11,8 @@ import logging
 import time
 from typing import Any
 
+from .grader import processor as grader_processor
 from . import (
-    alert_filter,
     alert_parser,
     config,
     db,
@@ -185,6 +185,16 @@ class Engine:
     def slots_snapshot(self) -> dict[str, Any]:
         self.mgr.sweep_expired_cooling()
         return self.mgr.snapshot()
+
+    def reset_after_wipe(self) -> None:
+        self._scanner_recent.clear()
+        self._scan_count = 0
+        self._score_count = 0
+        self._last_event_ts = 0.0
+        self.mgr = SlotManager()
+        for task in list(self._monitor_tasks.values()):
+            task.cancel()
+        self._monitor_tasks.clear()
 
     # ── main loop ────────────────────────────────────────────────────────
     async def run(self) -> None:
@@ -1548,9 +1558,7 @@ class Engine:
             context = ticker_context.build(ticker, {**alert, "_alert_id": alert_id})
         recent_entry["context"] = context
 
-        passed, reason = alert_filter.hard_filter(alert, self.mgr.ticker_counts(), context)
-        recent_entry["filter_reason"] = reason
-        if not passed:
+        if atype != "SCANNER":
             return
 
         if ticker:
@@ -1571,89 +1579,102 @@ class Engine:
             recent_entry["news_class"] = news_class
             if news_class == "NEGATIVE":
                 return
-            # POSITIVE(+): no RV floor here — fresh headlines often show RV 1x before
-            # volume piles in; scorer + Gemini rules weigh news catalyst vs liquidity.
 
         paused, why = self.mgr.entries_paused()
         if paused:
             recent_entry["filter_reason"] = f"paused:{why}"
             return
 
-        pack = price_data.price_pack(ticker) if ticker else {}
-        history = (
-            db.recent_ticker_alerts(ticker, hours=config.TICKER_HISTORY_HOURS, limit=20)
-            if ticker
-            else []
+        decision = await grader_processor.process_scanner_alert(
+            ticker=ticker or "?",
+            alert=alert,
+            alert_id=alert_id,
+            recent_entry=recent_entry,
         )
-        discord_event: dict[str, Any] | None = None
-        if is_edit:
-            discord_event = {
-                "type": "message_edit",
-                "message_id": mid,
-                "content_before": msg.get("content_before", ""),
-                "content_after": msg.get("content_after", ""),
-                "context_messages": msg.get("context_messages") or [],
-                "message_created_at": msg.get("message_created_at"),
-                "edited_at": msg.get("timestamp"),
-            }
-        scorer_payload = {
-            "alert": alert,
-            "discord_event": discord_event,
-            "news_class": news_class,
-            "price_pack": pack,
-            "ticker_history": history,
-            "context": context,
-            "slots": {
-                "open": sum(1 for s in self.mgr.state.slots if s.state == "OPEN"),
-                "active": [s.ticker for s in self.mgr.state.slots if s.state == "ACTIVE"],
-                "queue_size": len(self.mgr.state.queue),
-            },
-        }
-        decision = await gemini_ai.score_alert(scorer_payload)
-        self._score_count += 1
-        score = int(decision.get("score") or 0)
-        decision["score"] = score
-        _normalize_scorer_decision(decision)
-        recent_entry["score"] = score
-        recent_entry["decision"] = decision.get("decision")
-
-        db.log_score(alert_id, ticker or "?", decision, thinking_used=config.gemini_scorer_logs_thinking_used())
-
-        if decision.get("decision") != "TRADE" or score < config.SCORER_THRESHOLD_TRADE:
-            # Enqueue every WATCH (feed is keyed on decision, not score floor).
-            dec = decision.get("decision")
-            if dec != "SKIP" and (
-                dec in ("WATCH", "WATCH-NEWS") or score >= config.SCORER_THRESHOLD_WATCH
-            ):
-                await self.mgr.enqueue(
-                    QueuedAlert(
-                        ts=time.time(),
-                        score=score,
-                        ticker=ticker or "?",
-                        alert=alert,
-                        decision_payload=decision,
-                        alert_id=alert_id,
-                    )
-                )
-                try:
-                    db.watch_episode_ensure_open(
-                        ticker or "?",
-                        alert_id=alert_id,
-                        added_ts=time.time(),
-                        event={
-                            "kind": "enqueue",
-                            "ts": time.time(),
-                            "alert_id": alert_id,
-                            "decision": decision.get("decision"),
-                            "score": score,
-                            "reason": decision.get("reason"),
-                        },
-                    )
-                except Exception:
-                    _log.exception("watch_episode_ensure_open failed for %s", ticker)
+        if not decision:
             return
 
-        await self._try_open_trade(ticker, alert, decision, alert_id)
+        self._score_count += 1
+        _normalize_scorer_decision(decision)
+
+        dec = decision.get("decision")
+        if dec == "TRADE":
+            await self._try_open_trade(
+                ticker,
+                alert,
+                decision,
+                alert_id,
+                fail_if_no_slot=True,
+            )
+            return
+
+        if dec == "WATCH":
+            try:
+                db.watch_episode_ensure_open(
+                    ticker or "?",
+                    alert_id=alert_id,
+                    added_ts=time.time(),
+                    event={
+                        "kind": "grader_monitor",
+                        "ts": time.time(),
+                        "alert_id": alert_id,
+                        "decision": dec,
+                        "grade": decision.get("grade"),
+                        "reason": decision.get("reason"),
+                    },
+                )
+            except Exception:
+                _log.exception("watch_episode_ensure_open failed for %s", ticker)
+            return
+
+    def _record_slots_full_rejection(
+        self,
+        ticker: str,
+        alert: dict[str, Any],
+        decision: dict[str, Any],
+        alert_id: int,
+    ) -> None:
+        reason = "slots_full"
+        entry = float(alert.get("price") or decision.get("entry") or 0.0)
+        t212_code = t212_ai.resolve_ticker(ticker) or ticker.upper()
+        rid = db.insert(
+            """INSERT INTO trades(slot, ticker, score_id, alert_id, entry_price, tp, stop,
+                  capital_gbp, quantity, open_ts, status, t212_open_order_id, t212_error,
+                  exit_reason)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                0,
+                t212_code,
+                None,
+                alert_id,
+                entry,
+                decision.get("tp"),
+                round(entry * (1.0 - config.MAX_STOP_LOSS_PCT / 100.0), 6) if entry > 0 else None,
+                0.0,
+                0.0,
+                time.time(),
+                "REJECTED",
+                "",
+                "Unable due to Slots Full",
+                reason,
+            ),
+        )
+        try:
+            db.trade_audit_failed(
+                trade_id=int(rid),
+                alert_id=alert_id,
+                ticker_t212=t212_code,
+                added_ts=time.time(),
+                audit={
+                    "reason": "Unable due to Slots Full",
+                    "scorer_decision": decision,
+                    "alert": alert,
+                },
+                final_reason="Unable due to Slots Full",
+            )
+        except Exception:
+            _log.exception("slots_full audit failed ticker=%s", ticker)
+        _log.info("TRADE rejected — slots full ticker=%s", ticker)
 
     async def _try_open_trade(
         self,
@@ -1661,12 +1682,17 @@ class Engine:
         alert: dict[str, Any],
         decision: dict[str, Any],
         alert_id: int,
+        *,
+        fail_if_no_slot: bool = False,
     ) -> None:
         if not ticker:
             return
         async with self._trade_lock:
             slot = await self.mgr.find_open_slot()
             if not slot:
+                if fail_if_no_slot:
+                    self._record_slots_full_rejection(ticker, alert, decision, alert_id)
+                    return
                 await self.mgr.enqueue(
                     QueuedAlert(
                         ts=time.time(),
@@ -1695,7 +1721,7 @@ class Engine:
                     _log.exception("watch_episode_ensure_open failed for %s (trade queued)", ticker)
                 return
 
-            entry = float(decision.get("entry") or alert.get("price") or 0.0)
+            entry = float(alert.get("price") or decision.get("entry") or 0.0)
             stop_raw = float(decision.get("stop") or 0.0)
             if entry <= 0:
                 _log.info(
