@@ -2193,14 +2193,33 @@
   .ai-feed-section.filtered .ai-feed-section-head { color: var(--text2); }
   .ai-feed-empty { color: var(--text3); font-size: 11px; padding: 8px; }
 
-  .ai-feed-row {
+  .ai-feed-section-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .ai-feed-cols {
     display: grid;
-    grid-template-columns: 52px 66px 42px 72px minmax(0, max-content) minmax(0, 1fr);
-    gap: 6px 10px; padding: 5px 8px; border-radius: 6px; font-size: 11px; align-items: center;
+    grid-template-columns:
+      54px 62px 36px 58px 48px 54px 44px 40px 50px minmax(56px, 1fr) 96px;
+    gap: 4px 6px; align-items: center; padding: 4px 8px; min-width: 700px;
   }
+  .ai-feed-colhead {
+    font-family: var(--mono); font-size: 9px; color: var(--text3);
+    text-transform: uppercase; letter-spacing: 0.35px;
+    border-bottom: 1px solid var(--border); background: var(--bg2);
+    position: sticky; top: 0; z-index: 1;
+  }
+  .ai-feed-colhead span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ai-feed-col { font-family: var(--mono); font-size: 10px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ai-feed-col.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ai-feed-col.empty { color: var(--text3); opacity: 0.45; }
+  .ai-feed-col.pct.up { color: var(--green); font-weight: 700; }
+  .ai-feed-col.pct.down { color: var(--red); font-weight: 700; }
+  .ai-feed-col.rv.hot { color: var(--amber); font-weight: 700; }
+  .ai-feed-col.rv.cold { color: var(--text3); }
+
+  .ai-feed-row { border-radius: 6px; font-size: 11px; }
   .ai-feed-row:hover { background: var(--bg3); }
   .ai-feed-time { font-family: var(--mono); color: var(--text3); font-size: 10px; display: flex; align-items: center; gap: 3px; }
-  .ai-feed-type { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 3px; background: var(--bg3); color: var(--text2); text-align: center; }
+  .ai-feed-type { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 3px; background: var(--bg3); color: var(--text2); text-align: center; justify-self: stretch; }
   .ai-feed-type.SCANNER { color: var(--blue); background: var(--blue-dim); }
   .ai-feed-type.FIRE { color: var(--amber); background: var(--amber-dim); }
   .ai-feed-type.WHALE { color: #c084fc; background: rgba(192,132,252,0.12); }
@@ -2211,24 +2230,12 @@
   .ai-feed-rank.r3 { color: var(--amber); background: var(--amber-dim); }
   .ai-feed-rank.rN { color: var(--green); background: var(--green-dim); font-weight: 700; }
   .ai-feed-ticker { font-family: var(--mono); font-weight: 700; color: var(--text); letter-spacing: 0.5px; }
-  .ai-feed-stats { display: flex; gap: 10px; flex-wrap: nowrap; overflow: hidden; font-family: var(--mono); font-size: 10px; }
-  .ai-feed-stat { display: inline-flex; gap: 3px; align-items: baseline; white-space: nowrap; }
-  .ai-feed-stat .lbl { color: var(--text3); font-size: 9px; }
-  .ai-feed-stat .val { color: var(--text); }
-  .ai-feed-stat.pct .val.up { color: var(--green); }
-  .ai-feed-stat.pct .val.down { color: var(--red); }
-  .ai-feed-stat.rv .val.hot { color: var(--amber); font-weight: 700; }
-  .ai-feed-stat.rv .val.cold { color: var(--text3); }
-  .ai-feed-tags { display: flex; gap: 3px; flex-wrap: wrap; overflow: hidden; }
-  .ai-feed-trailing {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    justify-content: flex-start; justify-self: start; min-width: 0;
-  }
+  .ai-feed-tags { display: flex; gap: 3px; flex-wrap: nowrap; overflow: hidden; min-width: 0; }
   .ai-feed-tag-chip { font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 3px; background: var(--bg3); color: var(--text2); white-space: nowrap; }
   .ai-feed-tag-chip.kn { color: var(--green); background: var(--green-dim); }
   .ai-feed-tag-chip.sq { color: var(--amber); background: var(--amber-dim); }
   .ai-feed-tag-chip.bk { color: var(--blue); background: var(--blue-dim); }
-  .ai-feed-tag { font-family: var(--mono); font-size: 10px; padding: 1px 6px; border-radius: 3px; text-align: center; white-space: nowrap; flex-shrink: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+  .ai-feed-tag { font-family: var(--mono); font-size: 10px; padding: 1px 6px; border-radius: 3px; text-align: center; white-space: nowrap; justify-self: end; max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
   .ai-feed-tag.skip { color: var(--text3); background: var(--bg3); }
   .ai-feed-tag.trade { color: var(--green); background: var(--green-dim); font-weight: 700; }
   .ai-feed-tag.watch { color: var(--amber); background: var(--amber-dim); }
@@ -2446,19 +2453,19 @@
     .ai-trade-head {
       grid-template-columns: 1fr !important;
     }
+    .ai-feed-section-body { overflow-x: visible; }
+    .ai-feed-cols { min-width: 0; grid-template-columns: 1fr; padding: 8px; }
+    .ai-feed-colhead { display: none; }
     .ai-feed-row {
       display: flex;
       flex-direction: column;
       align-items: flex-start;
       gap: 6px;
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
     }
-    .ai-feed-row > * {
-      width: 100%;
-    }
-    .ai-feed-trailing {
-      width: 100%;
-      justify-content: flex-start;
-    }
+    .ai-feed-row > * { width: 100%; justify-self: start !important; text-align: left !important; }
+    .ai-feed-tag { max-width: none; justify-self: start; }
     .ai-watch-hist-cols,
     .ai-watch-hist-row,
     .ai-watch-hist-head {
@@ -3615,6 +3622,37 @@ function _aiHumanReason(code) {
   return k.replace(/_/g, ' ');
 }
 
+const _AI_FEED_COLHEAD = `
+  <div class="ai-feed-colhead ai-feed-cols">
+    <span>Time</span><span>Type</span><span>#</span><span>Ticker</span>
+    <span class="num">%</span><span class="num">$</span><span class="num">RV</span>
+    <span class="num">FT</span><span class="num">MC</span><span>Tags</span><span>Status</span>
+  </div>
+`;
+
+function _aiFeedIsActive(m) {
+  const label = m.active_label || '';
+  const st = m.grader_state || '';
+  if (['NEW', 'WATCHING', 'REVIEW', 'REVIEW WATCH'].includes(label)) return true;
+  if (['NEW', 'WATCHING', 'PENDING_AI', 'WATCH'].includes(st)) return true;
+  return false;
+}
+
+function _aiFeedBucket(m) {
+  const label = m.active_label || '';
+  const st = m.grader_state || '';
+  if (m.decision === 'TRADE' || label === 'TRADE' || st === 'TRADE') return 'trade';
+  if (_aiFeedIsActive(m)) return 'active';
+  if (label === 'FILTERED' || st === 'PASS' || st === 'DISQUALIFIED') return 'filtered';
+  if (m.decision === 'SKIP') return 'filtered';
+  if (m.filter_reason && m.filter_reason !== 'ok') return 'filtered';
+  return 'active';
+}
+
+function _aiFeedIsFiltered(m) {
+  return _aiFeedBucket(m) === 'filtered';
+}
+
 function _aiFeedRow(m) {
   const t = m.ts ? new Date(m.ts * 1000) : null;
   const time = t ? t.toLocaleTimeString('en-GB', { hour12: false }) : '—';
@@ -3622,9 +3660,7 @@ function _aiFeedRow(m) {
   const p = m.parsed || {};
   const label = m.active_label || '';
   const isTrade = m.decision === 'TRADE' || label === 'TRADE' || m.grader_state === 'TRADE';
-  const isFiltered = label === 'FILTERED' || m.decision === 'SKIP' || (
-    m.filter_reason && m.filter_reason !== 'ok' && !isTrade
-  );
+  const isFiltered = _aiFeedIsFiltered(m);
 
   let tag = label || '';
   let cls = 'skip';
@@ -3641,21 +3677,30 @@ function _aiFeedRow(m) {
 
   const rank = p.rank;
   const rankCls = rank == null ? '' : (rank === 1 ? 'r1' : rank === 2 ? 'r2' : rank === 3 ? 'r3' : 'rN');
-  const rankHtml = rank != null ? `<span class="ai-feed-rank ${rankCls}">#${rank}</span>` : `<span class="ai-feed-rank"></span>`;
+  const rankHtml = rank != null
+    ? `<span class="ai-feed-rank ${rankCls}">#${rank}</span>`
+    : `<span class="ai-feed-col empty">—</span>`;
 
-  const stats = [];
+  let pctHtml = '<span class="ai-feed-col num empty">—</span>';
   if (p.pct != null) {
     const dir = p.pct > 0 ? 'up' : (p.pct < 0 ? 'down' : '');
     const sign = p.pct > 0 ? '+' : '';
-    stats.push(`<span class="ai-feed-stat pct"><span class="lbl">%</span><span class="val ${dir}">${sign}${p.pct.toFixed(p.pct >= 100 ? 0 : 1)}</span></span>`);
+    pctHtml = `<span class="ai-feed-col num pct ${dir}">${sign}${p.pct.toFixed(p.pct >= 100 ? 0 : 1)}</span>`;
   }
-  if (p.price != null) stats.push(`<span class="ai-feed-stat"><span class="lbl">$</span><span class="val">${Number(p.price).toFixed(p.price >= 10 ? 2 : 3)}</span></span>`);
+  const priceHtml = p.price != null
+    ? `<span class="ai-feed-col num">${Number(p.price).toFixed(p.price >= 10 ? 2 : 3)}</span>`
+    : '<span class="ai-feed-col num empty">—</span>';
+  let rvHtml = '<span class="ai-feed-col num empty">—</span>';
   if (p.rv != null) {
     const hot = p.rv >= 10 ? 'hot' : (p.rv < 3 ? 'cold' : '');
-    stats.push(`<span class="ai-feed-stat rv"><span class="lbl">RV</span><span class="val ${hot}">${p.rv >= 10 ? Math.round(p.rv) : p.rv.toFixed(1)}x</span></span>`);
+    rvHtml = `<span class="ai-feed-col num rv ${hot}">${p.rv >= 10 ? Math.round(p.rv) : p.rv.toFixed(1)}x</span>`;
   }
-  if (p.float != null) stats.push(`<span class="ai-feed-stat"><span class="lbl">FT</span><span class="val">${_aiFmtCompact(p.float)}</span></span>`);
-  if (p.market_cap != null) stats.push(`<span class="ai-feed-stat"><span class="lbl">MC</span><span class="val">$${_aiFmtCompact(p.market_cap)}</span></span>`);
+  const ftHtml = p.float != null
+    ? `<span class="ai-feed-col num">${_aiFmtCompact(p.float)}</span>`
+    : '<span class="ai-feed-col num empty">—</span>';
+  const mcHtml = p.market_cap != null
+    ? `<span class="ai-feed-col num">${_aiFmtCompact(p.market_cap)}</span>`
+    : '<span class="ai-feed-col num empty">—</span>';
 
   const tagsHtml = (p.tags || []).slice(0, 4).map(_aiTagChip).join('');
   const newsClass = (p.news_headline || m.news_class) ? 'has-news' : '';
@@ -3666,16 +3711,18 @@ function _aiFeedRow(m) {
   const titleAttr = (m.raw || '').replace(/"/g,'&quot;');
 
   return `
-    <div class="${rowCls}" data-alert-id="${m.alert_id || ''}" data-ticker="${m.ticker || ''}" title="${titleAttr}">
+    <div class="${rowCls} ai-feed-cols" data-alert-id="${m.alert_id || ''}" data-ticker="${m.ticker || ''}" title="${titleAttr}">
       <span class="ai-feed-time">${time}${info}</span>
       <span class="ai-feed-type ${type}">${type}</span>
       ${rankHtml}
-      <span class="ai-feed-ticker">${m.ticker || '—'}</span>
-      <span class="ai-feed-stats">${stats.join('')}</span>
-      <span class="ai-feed-trailing">
-        <span class="ai-feed-tags">${tagsHtml}</span>
-        <span class="ai-feed-tag ${cls}">${tag}</span>
-      </span>
+      <span class="ai-feed-ticker ai-feed-col">${m.ticker || '—'}</span>
+      ${pctHtml}
+      ${priceHtml}
+      ${rvHtml}
+      ${ftHtml}
+      ${mcHtml}
+      <span class="ai-feed-tags">${tagsHtml || '<span class="ai-feed-col empty">—</span>'}</span>
+      <span class="ai-feed-tag ${cls}">${tag}</span>
     </div>
   `;
 }
@@ -3708,6 +3755,7 @@ function _aiFeedSection(title, items, cls, sectionKey) {
         <span class="count">${items.length}</span>
       </button>
       <div class="ai-feed-section-body">
+        ${_AI_FEED_COLHEAD}
         ${items.map(_aiFeedRow).join('')}
       </div>
     </div>
@@ -3747,16 +3795,9 @@ function _aiFeedRender() {
 
   const active = [], trade = [], filtered = [];
   for (const m of items) {
-    const label = m.active_label || '';
-    const isTrade = m.decision === 'TRADE' || label === 'TRADE' || m.grader_state === 'TRADE';
-    if (isTrade) trade.push(m);
-    else if (
-      label === 'FILTERED' || m.decision === 'SKIP' ||
-      (m.filter_reason && m.filter_reason !== 'ok')
-    ) filtered.push(m);
-    else if (['NEW', 'WATCHING', 'REVIEW', 'REVIEW WATCH'].includes(label)) active.push(m);
-    else if (m.type === 'SCANNER' && !m.filter_reason) active.push(m);
-    else if (m.filter_reason) filtered.push(m);
+    const bucket = _aiFeedBucket(m);
+    if (bucket === 'trade') trade.push(m);
+    else if (bucket === 'filtered') filtered.push(m);
     else active.push(m);
   }
 

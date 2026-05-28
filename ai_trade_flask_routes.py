@@ -544,9 +544,13 @@ def api_ai_feed():
         active_label = grader_state.ui_label(st_row) if st_row else None
         grader_st = st_row.get("state") if st_row else None
         disqualify = st_row.get("disqualify_reason") if st_row else None
-        filter_reason = None if d["score"] is not None else _filter_hint(parsed)
+        filter_reason = None
         if st_row and str(st_row.get("state") or "") in ("PASS", "DISQUALIFIED"):
             filter_reason = disqualify or ("ai_pass" if st_row.get("state") == "PASS" else "disqualified")
+        elif st_row and str(st_row.get("state") or "") in ("NEW", "WATCHING", "PENDING_AI", "WATCH", "TRADE"):
+            filter_reason = None
+        elif d["score"] is None:
+            filter_reason = _filter_hint(parsed)
         items.append(
             {
                 "alert_id": d["alert_id"],
