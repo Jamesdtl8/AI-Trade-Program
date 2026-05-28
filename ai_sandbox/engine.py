@@ -981,7 +981,19 @@ class Engine:
                     tag = str(bl["reason"]) if bl else ""
                 except Exception:
                     pass
-                recent_entry["filter_reason"] = f"blacklist:{tag}" if tag else "blacklist"
+                reason = f"blacklist:{tag}" if tag else "blacklist"
+                try:
+                    from .grader import state as ticker_state
+
+                    ticker_state.update(
+                        ticker,
+                        {"state": "DISQUALIFIED", "disqualify_reason": reason},
+                    )
+                except Exception:
+                    _log.exception("blacklist ticker_state update failed for %s", ticker)
+                recent_entry["grader_state"] = "DISQUALIFIED"
+                recent_entry["active_label"] = "FILTERED"
+                recent_entry["disqualify_reason"] = reason
                 return
 
         news_class: str | None = None
@@ -994,7 +1006,8 @@ class Engine:
 
         paused, why = self.mgr.entries_paused()
         if paused:
-            recent_entry["filter_reason"] = f"paused:{why}"
+            recent_entry["active_label"] = "FILTERED"
+            recent_entry["disqualify_reason"] = f"paused:{why}"
             return
 
         decision = await grader_processor.process_scanner_alert(

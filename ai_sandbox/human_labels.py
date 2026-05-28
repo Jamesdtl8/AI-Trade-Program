@@ -19,15 +19,9 @@ _LABELS: dict[str, str] = {
     "nbreak_at_3": "Disqualified — NBREAK at alert 3+",
     "no_momentum_label_at_3": "Deferred — no MOMENTUM/BREAKOUT label at alert 3",
     "price_not_higher_than_alert_2": "Deferred — price not above alert 2",
-    "no_label_at_3": "Disqualified — no label at alert 3",
-    "price_below_alert_2": "Disqualified — price below alert 2",
-    # Legacy filter hints
-    "halt": "Filtered — trading halt",
-    "offering": "Filtered — offering",
+    "ai_pass": "AI Pass",
+    "disqualified": "Disqualified",
     "blacklist": "Filtered — T212 blacklist",
-    "no_rv": "Filtered — no RV data",
-    "float_too_large_legacy": "Filtered — float too large",
-    "first_pct_too_late": "Filtered — move too extended",
     # AI actions
     "TRADE": "AI — Trade",
     "MONITOR": "AI — Monitor (watch)",
@@ -49,10 +43,8 @@ def humanize(code: str | None, *, fallback: str | None = None) -> str:
         return f"Filtered — T212 blacklist ({key.split(':', 1)[1]})"
     if key.startswith("paused:"):
         return f"Paused — {humanize(key.split(':', 1)[1], fallback=key.split(':', 1)[1])}"
-    if key.startswith("rv<"):
-        return f"Filtered — RV below {key[3:]}"
-    if key.startswith("type:"):
-        return f"Filtered — message type {key[5:]}"
+    if key.startswith("ai_error:"):
+        return "AI grading error"
     if key.startswith("startup_flat_or_unfilled:"):
         return "Closed — position never filled at startup"
     if key.startswith("state_drift:"):

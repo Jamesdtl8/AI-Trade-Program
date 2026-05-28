@@ -544,13 +544,8 @@ def api_ai_feed():
         active_label = grader_state.ui_label(st_row) if st_row else None
         grader_st = st_row.get("state") if st_row else None
         disqualify = st_row.get("disqualify_reason") if st_row else None
-        filter_reason = None
-        if st_row and str(st_row.get("state") or "") in ("PASS", "DISQUALIFIED"):
-            filter_reason = disqualify or ("ai_pass" if st_row.get("state") == "PASS" else "disqualified")
-        elif st_row and str(st_row.get("state") or "") in ("NEW", "WATCHING", "PENDING_AI", "WATCH", "TRADE"):
-            filter_reason = None
-        elif d["score"] is None:
-            filter_reason = _filter_hint(parsed)
+        if st_row and str(st_row.get("state") or "") == "PASS":
+            disqualify = disqualify or "ai_pass"
         items.append(
             {
                 "alert_id": d["alert_id"],
@@ -563,7 +558,6 @@ def api_ai_feed():
                 "decision": eff_decision,
                 "alert_score": alert_score,
                 "alert_decision": alert_decision,
-                "filter_reason": filter_reason,
                 "grader_state": grader_st,
                 "active_label": active_label,
                 "disqualify_reason": disqualify,
@@ -594,36 +588,6 @@ def api_ai_feed():
             break
 
     return jsonify(ok=True, items=deduped)
-
-
-def _filter_hint(parsed: dict) -> str | None:
-    """Best-effort label for why an alert was filtered before Claude.
-
-    Mirrors ai_sandbox.alert_filter rules in priority order; this is purely a
-    display hint — the engine is the source of truth.
-    """
-    t = parsed.get("type")
-    if t == "HALT":
-        return "halt"
-    if t == "OFFERING":
-        return "offering"
-    if t in (None, "UNKNOWN", "NEWS"):
-        return f"type:{t}" if t else None
-    if t == "WHALE" or t == "FIRE":
-        return None
-    rv = parsed.get("rv")
-    if rv is None:
-        return "no_rv"
-    if rv < 10:
-        return f"rv<10"
-    flt = parsed.get("float")
-    if flt is not None and flt > 30_000_000:
-        return "float_too_large"
-    pct = parsed.get("pct")
-    # Baseline scanner cap matches ai_sandbox alert_filter default (30%); elevated tier (60%) needs context — not available here.
-    if pct is not None and pct > 30:
-        return "first_pct_too_late"
-    return None
 
 
 @app.get("/api/ai/trades")

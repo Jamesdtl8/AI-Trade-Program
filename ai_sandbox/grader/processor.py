@@ -86,7 +86,7 @@ async def process_scanner_alert(
             tk,
             {"state": "DISQUALIFIED", "disqualify_reason": reason},
         )
-        recent_entry["filter_reason"] = reason
+        recent_entry["disqualify_reason"] = reason
         recent_entry["grader_state"] = "DISQUALIFIED"
         recent_entry["active_label"] = "FILTERED"
         db.watch_episode_ensure_open(
@@ -134,13 +134,18 @@ async def process_scanner_alert(
         result, latency_ms, cost_gbp = await openai_grader.grade_alert(st_row)
     except Exception as exc:
         _log.exception("AI grader failed %s", tk)
-        ticker_state.update(tk, {"state": st_row.get("state") or "WATCHING"})
-        recent_entry["filter_reason"] = f"ai_error:{exc}"
+        back = str(st_row.get("state") or "WATCHING")
+        ticker_state.update(tk, {"state": back})
+        st_row = ticker_state.get_or_create(tk)
+        recent_entry["grader_state"] = st_row.get("state")
+        recent_entry["active_label"] = ticker_state.ui_label(st_row)
         return None
 
     if not result:
         ticker_state.update(tk, {"state": "WATCHING"})
-        recent_entry["filter_reason"] = "ai_parse_failed"
+        st_row = ticker_state.get_or_create(tk)
+        recent_entry["grader_state"] = "WATCHING"
+        recent_entry["active_label"] = ticker_state.ui_label(st_row)
         return None
 
     user_message = messages.build_user_message(st_row)
@@ -201,7 +206,7 @@ async def process_scanner_alert(
         recent_entry["decision"] = "SKIP"
         recent_entry["grader_state"] = "PASS"
         recent_entry["active_label"] = "FILTERED"
-        recent_entry["filter_reason"] = "ai_pass"
+        recent_entry["disqualify_reason"] = "ai_pass"
 
     recent_entry["score"] = decision.get("score")
     db.log_score(

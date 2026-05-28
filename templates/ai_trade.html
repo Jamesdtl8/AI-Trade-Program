@@ -3611,14 +3611,13 @@ function _aiHumanReason(code) {
     nbreak_at_3: 'Disqualified — NBREAK',
     ai_pass: 'AI Pass',
     disqualified: 'Disqualified',
-    halt: 'Filtered — halt',
-    offering: 'Filtered — offering',
+    ai_parse_failed: 'AI response parse failed',
   };
   const k = String(code);
   if (map[k]) return map[k];
   if (k.startsWith('blacklist:')) return 'Filtered — T212 blacklist';
   if (k.startsWith('paused:')) return 'Paused — ' + k.slice(7);
-  if (k.startsWith('rv<')) return 'Filtered — RV below ' + k.slice(3);
+  if (k.startsWith('ai_error:')) return 'AI grading error';
   return k.replace(/_/g, ' ');
 }
 
@@ -3645,7 +3644,6 @@ function _aiFeedBucket(m) {
   if (_aiFeedIsActive(m)) return 'active';
   if (label === 'FILTERED' || st === 'PASS' || st === 'DISQUALIFIED') return 'filtered';
   if (m.decision === 'SKIP') return 'filtered';
-  if (m.filter_reason && m.filter_reason !== 'ok') return 'filtered';
   return 'active';
 }
 
@@ -3670,7 +3668,7 @@ function _aiFeedRow(m) {
   else if (tag === 'WATCHING') { cls = 'watch-news'; }
   else if (tag === 'NEW') { cls = 'news'; }
   else if (isFiltered) {
-    tag = tag || _aiHumanReason(m.filter_reason || m.disqualify_reason || 'ai_pass');
+    tag = tag || _aiHumanReason(m.disqualify_reason || (m.grader_state === 'PASS' ? 'ai_pass' : 'disqualified'));
     cls = 'kill';
   } else if (m.score != null) { tag = (m.decision || 'SKIP') + ' ' + m.score; cls = 'skip'; }
   else { tag = tag || 'NEW'; cls = 'news'; }
