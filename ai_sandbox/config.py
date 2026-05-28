@@ -334,6 +334,8 @@ FILL_WAIT_TIMEOUT_SECONDS = fill_wait_timeout_seconds()
 FILL_PARTIAL_THRESHOLD = fill_partial_threshold()
 POSITION_RECONCILE_FAST_S = 5
 POSITION_RECONCILE_SLOW_S = 30
+# Do not stop-loss broker-adopted orphans immediately (they may already be underwater).
+RECONCILE_STOP_GRACE_SECONDS = 1800
 EXIT_FLAT_POLL_TIMEOUT_S = 45.0
 MAX_STOP_LOSS_PCT = 10.0   # hard cap — engine clamps scorer stop so it can never sit deeper than entry × (1 - MAX_STOP_LOSS_PCT/100)
 
@@ -389,7 +391,42 @@ def entry_limit_cap_price(entry: float) -> float:
 
 def reconcile_orphan_positions() -> bool:
     """When false, broker positions without a matching OPEN trade are ignored."""
-    return _env("AI_RECONCILE_ORPHAN_POSITIONS", "0").strip().lower() in ("1", "true", "yes")
+    return _env("AI_RECONCILE_ORPHAN_POSITIONS", "1").strip().lower() in ("1", "true", "yes")
+
+
+# CLOSED rows with these exit_reason values were never verified at the broker.
+UNCONFIRMED_CLOSE_REASON_PREFIXES: tuple[str, ...] = (
+    "startup_flat_or_unfilled:",
+    "state_drift:",
+    "duplicate_open_cleanup",
+    "invalid_slot_cleanup",
+    "missing_t212_ticker_restart",
+)
+
+
+def trade_close_broker_confirmed(
+    *,
+    status: str,
+    exit_reason: str | None,
+    t212_close_order_id: str | None,
+    pnl_gbp: float | None,
+) -> bool:
+    """True when a CLOSED trade row is backed by a broker fill (order id + P&L)."""
+    st = (status or "").strip().upper()
+    if st == "OPEN":
+        return True
+    if st != "CLOSED":
+        return False
+    oid = str(t212_close_order_id or "").strip()
+    if not oid:
+        return False
+    reason = str(exit_reason or "")
+    for prefix in UNCONFIRMED_CLOSE_REASON_PREFIXES:
+        if reason.startswith(prefix) or reason == prefix:
+            return False
+    if pnl_gbp is None:
+        return False
+    return True
 
 
 ENTRY_LIMIT_CAP_PCT = 5.0   # regular-hours limit buy capped at entry × (1 + this)

@@ -2691,7 +2691,7 @@
     <div class="ai-strip">
       <div class="ai-stat"><div class="ai-stat-lbl">Engine</div><div class="ai-stat-val" id="ai-stat-engine">—</div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">T212 Env</div><div class="ai-stat-val" id="ai-stat-env">—</div></div>
-      <div class="ai-stat"><div class="ai-stat-lbl">Available Cash</div><div class="ai-stat-val" id="ai-stat-cash">—</div></div>
+      <div class="ai-stat"><div class="ai-stat-lbl">Account Value</div><div class="ai-stat-val" id="ai-stat-cash">—</div><div class="ai-stat-sub" id="ai-stat-cash-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Today P&amp;L</div><div class="ai-stat-val" id="ai-stat-pnl">—</div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Open / Closed / Rejected</div><div class="ai-stat-val" id="ai-stat-counts">—</div><div class="ai-stat-sub" id="ai-stat-blocked-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Scanner / Scored</div><div class="ai-stat-val" id="ai-stat-scan">—</div></div>
@@ -3487,20 +3487,24 @@ async function _aiAccountTick() {
 }
 
 function _aiFmtAccountCash(cash) {
-  if (!cash || cash.error) return { text: '—', title: '' };
+  if (!cash || cash.error) return { text: '—', title: '', sub: '' };
   const cur = String(cash.currency || 'GBP').toUpperCase();
   const sym = cur === 'GBP' ? '£' : cur === 'USD' ? '$' : cur + ' ';
-  const free = cash.free != null ? Number(cash.free) : (cash.total != null ? Number(cash.total) : null);
-  if (free == null || Number.isNaN(free)) return { text: '—', title: '' };
+  const total = cash.total != null ? Number(cash.total) : null;
+  const free = cash.free != null ? Number(cash.free) : null;
+  if (total == null || Number.isNaN(total)) return { text: '—', title: '', sub: '' };
   const fmt = (n) => sym + Number(n).toLocaleString('en-GB', { maximumFractionDigits: 0 });
   const parts = [];
-  if (cash.total != null) parts.push('Total: ' + fmt(cash.total));
+  if (free != null && !Number.isNaN(free)) parts.push('Cash: ' + fmt(free));
   if (cash.invested != null) parts.push('Invested: ' + fmt(cash.invested));
+  if (cash.currentValue != null) parts.push('Holdings: ' + fmt(cash.currentValue));
   if (cash.blocked != null) parts.push('Reserved: ' + fmt(cash.blocked));
   if (cash.ppl != null) parts.push('Unrealized: ' + _aiFmtMoney(cash.ppl));
+  const sub = free != null && !Number.isNaN(free) ? 'Cash ' + fmt(free) : '';
   return {
-    text: fmt(free),
-    title: 'T212 available to trade (' + cur + ')' + (parts.length ? '\n' + parts.join(' · ') : ''),
+    text: fmt(total),
+    title: 'T212 account value (' + cur + ')' + (parts.length ? '\n' + parts.join(' · ') : ''),
+    sub,
   };
 }
 
@@ -3541,6 +3545,8 @@ function _aiRenderStatus(s) {
     cashEl.textContent = cashUi.text;
     cashEl.title = cashUi.title;
   }
+  const cashSub = $('ai-stat-cash-sub');
+  if (cashSub) cashSub.textContent = cashUi.sub || '';
   $('ai-stat-counts').textContent =
     (s.open_trades || 0) + ' / ' + (s.closed_today || 0) + ' / ' + (s.rejected_today || 0);
   const sub = $('ai-stat-blocked-sub');
@@ -3564,23 +3570,25 @@ function _aiRenderSlots(sl) {
     const costGbp = s.wallet_total_cost_gbp != null ? Number(s.wallet_total_cost_gbp) : Number(s.capital_gbp || 0);
     const valueGbp = s.wallet_current_value_gbp != null ? Number(s.wallet_current_value_gbp) : null;
     const ug = s.unreal_gbp;
+    const showMoney = s.broker_managed || String(s.state || '').toUpperCase() === 'ACTIVE';
     const gbpLine =
       ug != null && !Number.isNaN(Number(ug))
         ? `<span class="ai-slot-pnl-gbp">${_aiFmtMoney(ug)}</span>`
         : '';
     const deployedRow =
-      costGbp > 0 && String(s.state || '').toUpperCase() === 'ACTIVE'
+      costGbp > 0 && showMoney
         ? `<div class="ai-slot-row" title="T212 walletImpact.totalCost (GBP)"><span>Cost</span><b>${_aiFmtMoney(costGbp)}</b></div>`
         : '';
     const valueRow =
-      valueGbp != null && !Number.isNaN(valueGbp) && String(s.state || '').toUpperCase() === 'ACTIVE'
+      valueGbp != null && !Number.isNaN(valueGbp) && showMoney
         ? `<div class="ai-slot-row" title="T212 walletImpact.currentValue (GBP)"><span>Value</span><b>${_aiFmtMoney(valueGbp)}</b></div>`
         : '';
+    const stateLbl = s.broker_unassigned ? 'BROKER' : (s.state || 'OPEN');
     return `
       <div class="ai-slot ${state}">
         <div class="ai-slot-head">
           <span class="ai-slot-idx">SLOT ${s.index + 1}</span>
-          <span class="ai-slot-state">${s.state}</span>
+          <span class="ai-slot-state">${stateLbl}</span>
         </div>
         <div class="ai-slot-ticker">${escapeHtml(s.display_ticker || s.ticker || '—')}</div>
         <div class="ai-slot-row"><span>Entry (USD)</span><b>${_aiFmtPrice(s.entry)}</b></div>

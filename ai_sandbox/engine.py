@@ -214,10 +214,14 @@ class Engine:
         # Background re-evaluation of watched tickers.
         asyncio.create_task(self._review_loop(), name="ai-watch-review")
         asyncio.create_task(self._position_reconciler(), name="ai-t212-position-reconcile")
-        try:
-            await self._resume_open_trades_after_restart()
-        except Exception:
-            _log.exception("resume OPEN trades failed")
+        asyncio.create_task(self._backfill_broker_pnl_loop(), name="ai-broker-pnl-backfill")
+        if await t212_ai.wait_for_positions_cache(45.0):
+            try:
+                await self._resume_open_trades_after_restart()
+            except Exception:
+                _log.exception("resume OPEN trades failed")
+        else:
+            _log.warning("positions cache empty after startup wait — resume deferred to reconciler")
 
         async def _scanner_tail():
             async for msg in scanner_feed.tail(interval=1.0, start_at_end=True):
@@ -596,6 +600,30 @@ class Engine:
     async def _close_open_trade_external(
         self, *, trade_id: int, slot_ix: int, slot_obj: Slot | None, reason: str
     ) -> None:
+        row = db.fetchone("SELECT * FROM trades WHERE id=? AND status='OPEN'", (trade_id,))
+        if not row:
+            return
+        row_d = dict(row)
+        t212_tkr = str(row_d.get("ticker") or "").strip().upper()
+        if t212_tkr:
+            qty_live = await t212_ai.broker_long_quantity(t212_tkr, retries=4)
+            if qty_live > 1e-6:
+                if 0 <= slot_ix < config.SLOT_COUNT:
+                    slot_use = slot_obj or self.mgr.state.slots[slot_ix]
+                    if slot_use.state != "ACTIVE" or slot_use.trade_id != trade_id:
+                        await self._try_activate_monitored_trade(
+                            row_d,
+                            qty_live,
+                            resume_reason="reconcile_broker_still_long",
+                        )
+                        _log.warning(
+                            "AI RECONCILE aborted external close id=%s — broker still long %s qty=%.4f",
+                            trade_id,
+                            t212_tkr,
+                            qty_live,
+                        )
+                return
+
         await self._stop_monitor_for_slot_ix(slot_ix)
         ts_done = time.time()
         try:
@@ -684,6 +712,10 @@ class Engine:
             "risk_flags": [],
             "alert": alert_reload,
         }
+        if "reconcile" in str(resume_reason or "").lower() or "reconciled" in str(
+            row.get("exit_reason") or ""
+        ):
+            setup["stop_grace_until"] = time.time() + float(config.RECONCILE_STOP_GRACE_SECONDS)
         await self.mgr.assign(
             slot_o,
             ticker=t212_tkr,
@@ -734,7 +766,10 @@ class Engine:
                 slot_ix = int(row_d["slot"])
             except (TypeError, ValueError, KeyError):
                 return False
-            if 0 <= slot_ix < config.SLOT_COUNT and self.mgr.state.slots[slot_ix].state == "OPEN":
+            if 0 <= slot_ix < config.SLOT_COUNT:
+                slot_o = self.mgr.state.slots[slot_ix]
+                if slot_o.state == "COOLING":
+                    await self.mgr.force_reset_slot(slot_o)
                 await self._try_activate_monitored_trade(
                     row_d,
                     qty,
@@ -743,7 +778,11 @@ class Engine:
                 return True
             return False
 
-        slot = await self.mgr.find_open_slot()
+        for sl in self.mgr.state.slots:
+            if sl.state == "ACTIVE" and str(sl.ticker or "").strip().upper() == tkr:
+                return True
+
+        slot = await self.mgr.find_adopt_slot()
         if not slot:
             _log.warning(
                 "AI RECONCILE orphan broker position ticker=%s qty=%.4f has no free slot",
@@ -899,7 +938,7 @@ class Engine:
                     )
                     continue
 
-                qty_live = await t212_ai.account_long_quantity(t212_tkr)
+                qty_live = await t212_ai.broker_long_quantity(t212_tkr, retries=4)
                 if qty_live <= 0:
                     ts_done = time.time()
                     try:
@@ -930,9 +969,64 @@ class Engine:
                     qty_live,
                 )
 
+    async def _backfill_broker_pnl_loop(self) -> None:
+        """Refresh CLOSED trade P&L from T212 order history (GBP realisedProfitLoss)."""
+        await asyncio.sleep(25)
+        while True:
+            try:
+                if not config.t212_credentials_ok():
+                    await asyncio.sleep(60)
+                    continue
+                rows = db.fetchall(
+                    """
+                    SELECT id, ticker, entry_price, t212_close_order_id, pnl_gbp, exit_reason
+                      FROM trades
+                     WHERE status='CLOSED'
+                       AND t212_close_order_id IS NOT NULL
+                       AND TRIM(t212_close_order_id) != ''
+                     ORDER BY exit_ts DESC
+                     LIMIT 25
+                    """,
+                )
+                for row in rows:
+                    row_d = dict(row)
+                    reason = str(row_d.get("exit_reason") or "")
+                    if any(
+                        reason.startswith(p) or reason == p
+                        for p in config.UNCONFIRMED_CLOSE_REASON_PREFIXES
+                    ):
+                        continue
+                    oid = str(row_d.get("t212_close_order_id") or "").strip()
+                    tkr = str(row_d.get("ticker") or "").strip()
+                    if not oid or not tkr:
+                        continue
+                    try:
+                        realised = await t212_ai.backfill_closed_trade_pnl_from_broker(
+                            int(row_d["id"]),
+                            ticker=tkr,
+                            close_order_id=oid,
+                            entry_price=float(row_d.get("entry_price") or 0.0),
+                        )
+                        if realised is not None:
+                            old = row_d.get("pnl_gbp")
+                            if old is None or abs(float(old) - float(realised)) > 0.02:
+                                _log.info(
+                                    "broker P&L backfill trade=%s ticker=%s old=%s new=%.2f",
+                                    row_d["id"],
+                                    tkr,
+                                    old,
+                                    realised,
+                                )
+                    except Exception:
+                        _log.exception("broker P&L backfill failed trade=%s", row_d.get("id"))
+                    await asyncio.sleep(11.0)
+            except Exception:
+                _log.exception("broker P&L backfill loop failed")
+            await asyncio.sleep(180)
+
     async def _position_reconciler(self) -> None:
         """Poll broker vs slot + SQLite — same principle as Discord ``_position_reconciler``."""
-        await asyncio.sleep(12)
+        await asyncio.sleep(3)
         while True:
             had_fast = False
             try:
@@ -1064,6 +1158,20 @@ class Engine:
                             t212_tkr,
                             qty_b,
                         )
+
+                    orphan_candidates = [
+                        t for t in broker_by_tkr if t not in tracked_tickers
+                    ]
+                    if orphan_candidates and config.reconcile_orphan_positions():
+                        open_n = sum(1 for sl in self.mgr.state.slots if sl.state == "OPEN")
+                        need = len(orphan_candidates)
+                        if open_n < need:
+                            for sl in self.mgr.state.slots:
+                                if sl.state == "COOLING" and open_n < need:
+                                    await self._stop_monitor_for_slot_ix(int(sl.index))
+                                    await self.mgr.force_reset_slot(sl)
+                                    open_n += 1
+                                    had_fast = True
 
                     for b_tkr, qty in broker_by_tkr.items():
                         if b_tkr in tracked_tickers:

@@ -187,6 +187,37 @@ def invalidate_positions_cache() -> None:
     _POSITIONS_CACHE = None
 
 
+async def wait_for_positions_cache(timeout: float = 45.0) -> bool:
+    """Block until the positions poller has populated at least one snapshot."""
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    while time.monotonic() < deadline:
+        async with _POSITIONS_LOCK:
+            if _POSITIONS_CACHE is not None:
+                return True
+        await asyncio.sleep(0.4)
+    return False
+
+
+async def broker_long_quantity(
+    t212_code: str,
+    *,
+    retries: int = 4,
+    retry_delay_s: float = 1.5,
+) -> float:
+    """Long quantity from the shared positions snapshot, with brief retries."""
+    tgt = (t212_code or "").strip().upper()
+    if not tgt:
+        return 0.0
+    attempts = max(1, int(retries))
+    for attempt in range(attempts):
+        _px, qty = await broker_quote_long_qty(tgt, bypass_cache=False)
+        if qty is not None and qty > 1e-6:
+            return float(qty)
+        if attempt + 1 < attempts:
+            await asyncio.sleep(retry_delay_s)
+    return 0.0
+
+
 def _normalize_position_row(p: dict[str, Any]) -> dict[str, Any]:
     row = dict(p)
     inst = row.get("instrument")
@@ -830,6 +861,43 @@ async def fetch_order_fill_from_history(
 
 # Back-compat name used by older call sites.
 fetch_closed_order_fill_details = fetch_order_fill_from_history
+
+
+async def backfill_closed_trade_pnl_from_broker(
+    trade_id: int,
+    *,
+    ticker: str,
+    close_order_id: str,
+    entry_price: float | None = None,
+) -> float | None:
+    """Update ``trades.pnl_gbp`` from T212 order history ``realisedProfitLoss`` (GBP)."""
+    from . import db
+
+    oid = str(close_order_id or "").strip()
+    if not oid:
+        return None
+    avg_px, realised, fill_qty = await fetch_order_fill_from_history(oid, ticker, page_walk=50)
+    if realised is None:
+        return None
+    exit_px = avg_px if avg_px is not None and avg_px > 0 else None
+    entry = float(entry_price or 0.0)
+    pnl_pct: float | None = None
+    if exit_px is not None and entry > 0:
+        pnl_pct = round((exit_px - entry) / entry * 100.0, 4)
+    db.execute(
+        """UPDATE trades SET pnl_gbp=?, exit_price=COALESCE(?, exit_price),
+                              pnl_pct=COALESCE(?, pnl_pct),
+                              quantity=COALESCE(?, quantity)
+           WHERE id=? AND status='CLOSED'""",
+        (
+            round(float(realised), 4),
+            exit_px,
+            pnl_pct,
+            fill_qty,
+            int(trade_id),
+        ),
+    )
+    return round(float(realised), 4)
 
 
 async def get_order(order_id: str | int) -> dict[str, Any]:

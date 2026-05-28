@@ -44,6 +44,9 @@ def api_ai_status():
     today_pnl_open_unreal = _ai_open_trades_unrealized_gbp(px_map)
     today_pnl = round(today_pnl_realized + today_pnl_open_unreal, 2)
     open_trades = db.fetchone("SELECT COUNT(*) AS c FROM trades WHERE status='OPEN'")
+    broker_rows = _ai_broker_position_rows()
+    broker_open = len(broker_rows)
+    open_trades_n = broker_open if broker_open else (int(open_trades["c"]) if open_trades else 0)
     closed_today = db.fetchone(
         "SELECT COUNT(*) AS c FROM trades WHERE status='CLOSED' AND exit_ts >= ?",
         (time.time() - 86400,),
@@ -81,7 +84,8 @@ def api_ai_status():
         today_pnl_gbp=today_pnl,
         today_pnl_realized_gbp=round(today_pnl_realized, 2),
         today_pnl_open_unreal_gbp=today_pnl_open_unreal,
-        open_trades=int(open_trades["c"]) if open_trades else 0,
+        open_trades=open_trades_n,
+        broker_open_positions=broker_open,
         closed_today=int(closed_today["c"]) if closed_today else 0,
         rejected_today=int(rejected_today["c"]) if rejected_today else 0,
         cash=cash,
@@ -155,6 +159,162 @@ def _ai_live_price_usd_by_ticker() -> dict[str, float]:
         return dict(out)
 
 
+def _ai_broker_position_rows() -> list[dict[str, Any]]:
+    """Normalized T212 position rows from the shared poller snapshot."""
+    import asyncio as _asyncio
+
+    from ai_sandbox import service as _ai_svc, t212_ai as _t212_ai
+
+    eng = _ai_engine()
+    cfg = _ai_config()
+    if eng is None or not cfg.t212_credentials_ok():
+        return []
+    loop = _ai_svc._loop
+    if loop is None:
+        return []
+    try:
+        fut = _asyncio.run_coroutine_threadsafe(
+            _t212_ai.get_positions(bypass_cache=False),
+            loop,
+        )
+        rows = fut.result(timeout=8)
+    except Exception as exc:
+        _log.debug("ai broker positions failed: %s", exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for p in rows or []:
+        if not isinstance(p, dict):
+            continue
+        tk = str(p.get("ticker") or "").strip().upper()
+        try:
+            qty = float(p.get("quantity") or 0.0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if not tk or qty <= 1e-6:
+            continue
+        wm = _t212_ai.wallet_metrics_from_row(p)
+        try:
+            avg = float(p.get("averagePrice") or 0.0)
+        except (TypeError, ValueError):
+            avg = 0.0
+        try:
+            mark = float(p.get("currentPrice") or 0.0)
+        except (TypeError, ValueError):
+            mark = 0.0
+        out.append(
+            {
+                "ticker": tk,
+                "quantity": qty,
+                "average_price_usd": avg if avg > 0 else None,
+                "current_price_usd": mark if mark > 0 else None,
+                "wallet_total_cost_gbp": wm.get("total_cost_gbp"),
+                "wallet_current_value_gbp": wm.get("current_value_gbp"),
+                "unreal_gbp": wm.get("unreal_gbp"),
+                "unreal_pct": wm.get("unreal_pct"),
+                "wallet_fx_impact_gbp": wm.get("fx_impact_gbp"),
+            }
+        )
+    out.sort(key=lambda x: float(x.get("wallet_current_value_gbp") or 0.0), reverse=True)
+    return out
+
+
+def _ai_merge_broker_into_slots(snap: dict[str, Any], broker_rows: list[dict[str, Any]]) -> None:
+    """Overlay broker positions onto slot cards — broker is the display source of truth."""
+    if not broker_rows:
+        return
+    try:
+        from ai_sandbox import t212_ai as _t212_ai_disp
+    except Exception:
+        _t212_ai_disp = None
+
+    slots = snap.get("slots") or []
+    by_ticker = {str(r["ticker"]).upper(): r for r in broker_rows}
+    broker_tickers = set(by_ticker.keys())
+    assigned: set[str] = set()
+
+    for s in slots:
+        st = str(s.get("state") or "").upper()
+        tk = str(s.get("ticker") or "").strip().upper()
+        if st == "ACTIVE" and tk and tk in by_ticker:
+            br = by_ticker[tk]
+            assigned.add(tk)
+            _ai_apply_broker_row_to_slot(s, br, _t212_ai_disp)
+            s["broker_managed"] = True
+        elif s.get("broker_unassigned") and tk and tk not in broker_tickers:
+            s.pop("broker_unassigned", None)
+            s.pop("broker_managed", None)
+            if str(s.get("last_decision") or "").startswith("broker:"):
+                s["last_decision"] = None
+            if not s.get("trade_id"):
+                s["ticker"] = None
+                s["display_ticker"] = None
+                s["state"] = "OPEN"
+                for k in (
+                    "wallet_total_cost_gbp",
+                    "wallet_current_value_gbp",
+                    "unreal_gbp",
+                    "unreal_pct",
+                    "wallet_fx_impact_gbp",
+                    "capital_gbp",
+                    "entry",
+                    "last_price",
+                ):
+                    s.pop(k, None)
+
+    free_indices = [
+        i
+        for i, s in enumerate(slots)
+        if str(s.get("state") or "").upper() != "ACTIVE" or not s.get("trade_id")
+    ]
+    orphan_rows = [r for r in broker_rows if r["ticker"] not in assigned]
+    for idx, br in zip(free_indices, orphan_rows):
+        s = slots[idx]
+        s["broker_managed"] = True
+        s["broker_unassigned"] = True
+        s["display_ticker"] = (
+            _t212_ai_disp.display_raw_for(str(br["ticker"])) if _t212_ai_disp else br["ticker"]
+        )
+        s["ticker"] = br["ticker"]
+        if s.get("state") == "OPEN":
+            s["state"] = "ACTIVE"
+        _ai_apply_broker_row_to_slot(s, br, _t212_ai_disp)
+        if s.get("entry") is None and br.get("average_price_usd"):
+            s["entry"] = br["average_price_usd"]
+        if s.get("last_price") is None and br.get("current_price_usd"):
+            s["last_price"] = br["current_price_usd"]
+        if not s.get("last_decision"):
+            s["last_decision"] = "broker:awaiting_reconcile"
+
+
+def _ai_apply_broker_row_to_slot(s: dict, br: dict, disp_mod) -> None:
+    if br.get("wallet_total_cost_gbp") is not None:
+        s["wallet_total_cost_gbp"] = round(float(br["wallet_total_cost_gbp"]), 2)
+        s["capital_gbp"] = round(float(br["wallet_total_cost_gbp"]), 2)
+    if br.get("wallet_current_value_gbp") is not None:
+        s["wallet_current_value_gbp"] = round(float(br["wallet_current_value_gbp"]), 2)
+    if br.get("unreal_gbp") is not None:
+        s["unreal_gbp"] = round(float(br["unreal_gbp"]), 2)
+    if br.get("unreal_pct") is not None:
+        s["unreal_pct"] = round(float(br["unreal_pct"]), 3)
+    if br.get("wallet_fx_impact_gbp") is not None:
+        s["wallet_fx_impact_gbp"] = round(float(br["wallet_fx_impact_gbp"]), 2)
+    if br.get("current_price_usd"):
+        s["last_price"] = float(br["current_price_usd"])
+    tk = str(br.get("ticker") or "")
+    if disp_mod and tk:
+        s["display_ticker"] = disp_mod.display_raw_for(tk)
+
+
+def _ai_trade_broker_confirmed(row: dict) -> bool:
+    cfg = _ai_config()
+    return cfg.trade_close_broker_confirmed(
+        status=str(row.get("status") or ""),
+        exit_reason=row.get("exit_reason"),
+        t212_close_order_id=row.get("t212_close_order_id"),
+        pnl_gbp=row.get("pnl_gbp"),
+    )
+
+
 def _ai_positions_wallet_map() -> dict[str, dict[str, float | None]]:
     """T212 walletImpact metrics keyed by instrument code (GBP from broker)."""
     import asyncio as _asyncio
@@ -192,23 +352,14 @@ def _ai_positions_wallet_map() -> dict[str, dict[str, float | None]]:
 
 
 def _ai_open_trades_unrealized_gbp(px_map: dict[str, float]) -> float:
-    """Sum unrealized GBP P&L for OPEN trades — prefer T212 walletImpact over USD marks."""
+    """Sum unrealized GBP P&L from T212 positions (broker source of truth)."""
     wallet_map = _ai_positions_wallet_map()
     if wallet_map:
-        db = _ai_db()
-        rows = db.fetchall(
-            "SELECT ticker FROM trades WHERE status='OPEN'",
-        )
         total = 0.0
-        used_wallet = False
-        for r in rows:
-            tk = str(r["ticker"] or "").strip().upper()
-            wm = wallet_map.get(tk)
+        for wm in wallet_map.values():
             if wm and wm.get("unreal_gbp") is not None:
                 total += float(wm["unreal_gbp"])
-                used_wallet = True
-        if used_wallet:
-            return round(total, 2)
+        return round(total, 2)
 
     if not px_map:
         return 0.0
@@ -254,6 +405,7 @@ def api_ai_slots():
     snap = eng.slots_snapshot()
     px_map = _ai_live_price_usd_by_ticker()
     wallet_map = _ai_positions_wallet_map()
+    broker_rows = _ai_broker_position_rows()
     try:
         from ai_sandbox import t212_ai as _t212_ai_disp
 
@@ -297,8 +449,10 @@ def api_ai_slots():
                         s["unreal_gbp"] = round(cg * float(s["unreal_pct"]) / 100.0, 2)
                 except (TypeError, ValueError):
                     pass
+        _ai_merge_broker_into_slots(snap, broker_rows)
     except Exception as exc:
         _log.debug("ai slot enrich failed: %s", exc)
+    snap["broker_positions"] = broker_rows
     return jsonify(ok=True, **snap)
 
 
@@ -487,6 +641,14 @@ def api_ai_trades():
                         pass
     except Exception as exc:
         _log.debug("ai trades enrich failed: %s", exc)
+
+    for it in items:
+        it["broker_confirmed"] = _ai_trade_broker_confirmed(it)
+    items = [
+        it
+        for it in items
+        if str(it.get("status") or "").upper() != "CLOSED" or it.get("broker_confirmed")
+    ]
 
     return jsonify(ok=True, items=items)
 

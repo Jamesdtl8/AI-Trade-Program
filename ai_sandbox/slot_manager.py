@@ -92,6 +92,22 @@ class SlotManager:
                     return s
             return None
 
+    async def find_adopt_slot(self) -> Slot | None:
+        """Reserve a slot for a broker orphan — may reclaim COOLING slots immediately."""
+        async with self._lock:
+            now = time.time()
+            for s in self.state.slots:
+                if s.state == "COOLING" and s.cooling_until and now >= s.cooling_until:
+                    self._reset_slot(s)
+            for s in self.state.slots:
+                if s.state == "OPEN":
+                    return s
+            for s in self.state.slots:
+                if s.state == "COOLING":
+                    self._reset_slot(s)
+                    return s
+            return None
+
     def _reset_slot(self, s: Slot) -> None:
         s.state = "OPEN"
         s.ticker = None

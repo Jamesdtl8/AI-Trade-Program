@@ -180,7 +180,12 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                     return
 
             # Hard stop: -10% unrealized P&L → market sell.
-            if unreal_pct is not None and unreal_pct <= -stop_loss_pct:
+            stop_grace_until = float(setup.get("stop_grace_until") or 0.0)
+            if (
+                unreal_pct is not None
+                and unreal_pct <= -stop_loss_pct
+                and not (stop_grace_until > 0 and time.time() < stop_grace_until)
+            ):
                 await _exit(
                     slot,
                     mgr,
@@ -396,15 +401,30 @@ async def _exit(
     close_oid = close_order_id_override or str(res.get("id") or "")
     mv = ((float(price) - entry_px) * qty_closed_for_pnl) if entry_px > 0 and qty_closed_for_pnl > 0 else 0.0
     pnl_gb = config.usd_notionals_to_gbp(mv)
+    exit_px = float(price)
+    if close_oid and not res.get("stub"):
+        try:
+            hist_px, realised_gbp, _fq = await t212_ai.fetch_order_fill_from_history(
+                close_oid,
+                ticker,
+                initial_delay_s=1.5,
+                max_attempts=6,
+            )
+            if realised_gbp is not None:
+                pnl_gb = float(realised_gbp)
+            if hist_px is not None and hist_px > 0:
+                exit_px = float(hist_px)
+        except Exception as exc:
+            _log.warning("exit broker P&L lookup failed order=%s: %s", close_oid, exc)
     db.execute(
         """UPDATE trades SET exit_price=?, exit_ts=?, exit_reason=?, status='CLOSED',
                               pnl_pct=ROUND((?-entry_price)/NULLIF(entry_price,0)*100, 4),
                               pnl_gbp=?,
                               t212_close_order_id=?
            WHERE id=?""",
-        (price, exit_ts_wall, reason, price, pnl_gb, close_oid, trade_id),
+        (exit_px, exit_ts_wall, reason, exit_px, round(float(pnl_gb), 4), close_oid, trade_id),
     )
-    await mgr.close(slot, exit_price=price, reason=reason)
+    await mgr.close(slot, exit_price=exit_px, reason=reason)
     _trade_audit_after_close(
         trade_id=trade_id,
         exit_ts=exit_ts_wall,
