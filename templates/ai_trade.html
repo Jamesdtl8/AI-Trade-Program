@@ -2351,50 +2351,6 @@
   .ai-watch-hist-reason-cell .ai-queue-view { flex-shrink: 0; margin-top: 0; align-self: flex-start; }
   .ai-watch-hist-head { display: grid; gap: 6px 8px; padding: 3px 10px; font-size: 9px; color: var(--text3); letter-spacing: 0.5px; text-transform: uppercase; align-items: end; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
 
-  /* News scanner log (under AI History): collapsible, ~10 rows visible + scroll */
-  .ai-news-hist-card { margin-top: 8px; }
-  .ai-news-hist-toggle {
-    display: flex; align-items: center; gap: 10px; width: 100%;
-    padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
-    background: var(--bg3); color: var(--text); font: inherit; cursor: pointer;
-    text-align: left; transition: background 0.12s;
-  }
-  .ai-news-hist-toggle:hover { background: var(--bg4); }
-  .ai-news-hist-chevron {
-    display: inline-block; font-size: 10px; color: var(--text3);
-    transition: transform 0.15s ease; flex-shrink: 0;
-  }
-  .ai-news-hist-card.collapsed .ai-news-hist-chevron { transform: rotate(-90deg); }
-  .ai-news-hist-title { font-family: var(--sans); font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
-  .ai-news-hist-meta { margin-left: auto; font-size: 10px; color: var(--text3); font-family: var(--mono); }
-  .ai-news-hist-scroll-wrap {
-    margin-top: 6px; border: 1px solid var(--border); border-radius: 8px;
-    background: var(--bg2); overflow: hidden;
-  }
-  .ai-news-hist-card.collapsed .ai-news-hist-scroll-wrap { display: none; }
-  .ai-news-hist-scroll {
-    max-height: 420px;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  .ai-news-hist-cols { grid-template-columns: 66px 56px minmax(100px, 118px) minmax(0, 1fr) 48px; }
-  .ai-news-hist-head { display: grid; gap: 6px 8px; padding: 6px 10px 4px; font-size: 9px; color: var(--text3); letter-spacing: 0.45px; text-transform: uppercase; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg2); z-index: 1; }
-  .ai-news-hist-row {
-    display: grid; gap: 6px 8px; padding: 8px 10px; font-size: 11px; font-family: var(--mono);
-    border-bottom: 1px solid var(--border); align-items: start; cursor: pointer; transition: background 0.1s;
-  }
-  .ai-news-hist-row:last-child { border-bottom: none; }
-  .ai-news-hist-row:hover { background: var(--bg3); }
-  .ai-news-hist-pill {
-    display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 700;
-    letter-spacing: 0.04em; white-space: nowrap;
-  }
-  .ai-news-hist-pill.news-out-ok { color: var(--green); background: var(--green-dim2); }
-  .ai-news-hist-pill.news-out-warn { color: var(--amber); background: var(--amber-dim); }
-  .ai-news-hist-pill.news-out-muted { color: var(--text2); background: var(--bg4); }
-  .ai-news-hist-pill.news-out-bad { color: var(--red); background: var(--red-dim2); }
-  .ai-news-hist-hl { color: var(--text2); font-size: 10px; line-height: 1.35; overflow: hidden; word-break: break-word;
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
   .ai-trade-head { display: grid; gap: 6px 10px; padding: 4px 10px 6px; font-size: 9px; color: var(--text3); letter-spacing: 0.5px; text-transform: uppercase; align-items: end; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
   .ai-trade-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .ai-trade-ticker { font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2480,11 +2436,6 @@
     .ai-watch-hist-cols,
     .ai-watch-hist-row,
     .ai-watch-hist-head {
-      grid-template-columns: 1fr !important;
-    }
-    .ai-news-hist-cols,
-    .ai-news-hist-row,
-    .ai-news-hist-head {
       grid-template-columns: 1fr !important;
     }
     .ai-watch-rev {
@@ -2734,17 +2685,6 @@
     <div class="ai-card">
       <div class="ai-section-title">AI History</div>
       <div class="ai-watch-hist" id="ai-watch-hist"></div>
-    </div>
-
-    <div class="ai-news-hist-card" id="ai-news-hist-card">
-      <button type="button" class="ai-news-hist-toggle" id="ai-news-hist-toggle" aria-expanded="true">
-        <span class="ai-news-hist-chevron">▼</span>
-        <span class="ai-news-hist-title">News tester log</span>
-        <span class="ai-news-hist-meta" id="ai-news-hist-meta"></span>
-      </button>
-      <div class="ai-news-hist-scroll-wrap">
-        <div class="ai-news-hist-scroll" id="ai-news-hist-scroll"></div>
-      </div>
     </div>
   </div>
 </div>
@@ -3414,22 +3354,6 @@ function renderAITradePage() {
       _aiTick();
     });
   }
-
-  const newsCard = $('ai-news-hist-card');
-  const newsToggle = $('ai-news-hist-toggle');
-  if (newsCard && newsToggle && !newsToggle._wired) {
-    newsToggle._wired = true;
-    if (localStorage.getItem('aiNewsHistCollapsed') === '1') {
-      newsCard.classList.add('collapsed');
-      newsToggle.setAttribute('aria-expanded', 'false');
-    }
-    newsToggle.addEventListener('click', () => {
-      newsCard.classList.toggle('collapsed');
-      const collapsed = newsCard.classList.contains('collapsed');
-      localStorage.setItem('aiNewsHistCollapsed', collapsed ? '1' : '0');
-      newsToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    });
-  }
 }
 
 async function _aiFetchAiHistoryList(limit) {
@@ -3453,36 +3377,21 @@ async function _aiFetchAiHistoryDetail(histId) {
   return r.json();
 }
 
-async function _aiFetchNewsHistory(limit) {
-  const q = '?limit=' + encodeURIComponent(limit);
-  const r = await fetch('/api/ai/news_history' + q);
-  if (!r.ok) throw new Error('news_history ' + r.status);
-  return r.json();
-}
-
-async function _aiFetchNewsHistoryDetail(nid) {
-  const r = await fetch('/api/ai/news_history/' + nid);
-  if (!r.ok) throw new Error('news_detail ' + r.status);
-  return r.json();
-}
-
 async function _aiTick() {
   if (_currentPage !== 'ai-trade') return;
   try {
-    const [s, sl, fd, tr, wh, nh] = await Promise.all([
+    const [s, sl, fd, tr, wh] = await Promise.all([
       fetch('/api/ai/status').then(r => r.json()),
       fetch('/api/ai/slots').then(r => r.json()),
       fetch('/api/ai/feed?limit=80').then(r => r.json()),
       fetch('/api/ai/trades?limit=80').then(r => r.json()),
       _aiFetchAiHistoryList(80),
-      _aiFetchNewsHistory(200).catch(() => ({ ok: false, items: [] })),
     ]);
     _aiRenderStatus(s);
     _aiRenderSlots(sl);
     _aiRenderFeed(fd);
     _aiRenderTrades(tr);
     _aiRenderWatchHistory(wh);
-    _aiRenderNewsHistory(nh);
   } catch (e) { /* noop */ }
 }
 
@@ -4348,214 +4257,6 @@ function _aiRenderWatchHistory(wh) {
   root.querySelectorAll('.ai-watch-hist-row').forEach((r) => {
     r.addEventListener('click', () => _aiOpenWatchHistoryDrawer(parseInt(r.dataset.histId, 10)));
   });
-}
-
-function _aiNewsOutcomeLabel(outcome) {
-  const m = {
-    ENQUEUED: 'Queued',
-    FLASH_SKIP: 'Flash skip',
-    PRICE_SKIP: 'Price gate',
-    PARSE_FAIL: 'Parse fail',
-    FILTER_BLACKLIST: 'Blocklist',
-    FILTER_OFFERING: 'Offering',
-    FILTER_MCAP: 'Mcap cap',
-    FILTER_PAUSED: 'Paused',
-    FILTER_SLOTS: 'Slots full',
-  };
-  return m[outcome] || String(outcome || '—').replace(/_/g, ' ');
-}
-
-function _aiNewsOutcomeClass(outcome) {
-  if (outcome === 'ENQUEUED') return 'news-out-ok';
-  if (outcome === 'FLASH_SKIP' || outcome === 'PRICE_SKIP') return 'news-out-warn';
-  if (String(outcome || '').startsWith('FILTER_')) return 'news-out-muted';
-  if (outcome === 'PARSE_FAIL') return 'news-out-bad';
-  return 'news-out-muted';
-}
-
-function _aiRenderNewsHistory(nh) {
-  const scroll = $('ai-news-hist-scroll');
-  const meta = $('ai-news-hist-meta');
-  if (!scroll) return;
-  const items = (nh && nh.ok && Array.isArray(nh.items)) ? nh.items : [];
-  if (meta) {
-    meta.textContent = items.length ? (items.length + ' rows · ~10 visible, scroll for more') : 'no rows yet';
-  }
-  const NH_COLS = '66px 56px minmax(100px, 118px) minmax(0, 1fr) 48px';
-  const head = `
-    <div class="ai-news-hist-head ai-news-hist-cols" style="grid-template-columns:${NH_COLS};">
-      <span>Time</span>
-      <span>Ticker</span>
-      <span>Result</span>
-      <span>Headline</span>
-      <span></span>
-    </div>
-  `;
-  scroll.innerHTML = head + items.map((it) => {
-    const ts = it.ts != null ? new Date(Number(it.ts) * 1000) : null;
-    const tStr = ts ? ts.toLocaleTimeString('en-GB', { hour12: false }) : '—';
-    const tk = escapeHtml(it.display_ticker || it.ticker || '—');
-    const oc = _aiNewsOutcomeClass(it.outcome);
-    const ol = escapeHtml(_aiNewsOutcomeLabel(it.outcome));
-    const hl = escapeHtml((it.headline || it.outcome_detail || '').slice(0, 200));
-    const hlTitle = String(it.headline || it.outcome_detail || '')
-      .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').slice(0, 600);
-    return `
-      <div class="ai-news-hist-row ai-news-hist-cols" style="grid-template-columns:${NH_COLS};" data-news-log-id="${it.id}">
-        <span style="color:var(--text3);white-space:nowrap;">${tStr}</span>
-        <span style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${tk}</span>
-        <span><span class="ai-news-hist-pill ${oc}">${ol}</span></span>
-        <span class="ai-news-hist-hl" title="${hlTitle}">${hl || '—'}</span>
-        <span><button type="button" class="ai-queue-view" data-news-log-id="${it.id}">View</button></span>
-      </div>
-    `;
-  }).join('');
-
-  scroll.querySelectorAll('button[data-news-log-id]').forEach((b) => {
-    b.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      _aiOpenNewsLogDrawer(parseInt(b.dataset.newsLogId, 10));
-    });
-  });
-  scroll.querySelectorAll('.ai-news-hist-row').forEach((r) => {
-    r.addEventListener('click', () => _aiOpenNewsLogDrawer(parseInt(r.dataset.newsLogId, 10)));
-  });
-}
-
-async function _aiOpenNewsLogDrawer(nid) {
-  if (!nid) return;
-  const dr = $('ai-drawer'); const bd = $('ai-drawer-backdrop');
-  dr.classList.add('show'); bd.classList.add('show');
-  $('ai-drawer-title').textContent = 'News scanner';
-  const body = $('ai-drawer-body');
-  body.innerHTML = '<div style="color:var(--text3);font-size:11px;">Loading…</div>';
-  if (!dr._wired) {
-    dr._wired = true;
-    $('ai-drawer-close').addEventListener('click', _aiCloseDrawer);
-    bd.addEventListener('click', _aiCloseDrawer);
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _aiCloseDrawer(); });
-  }
-  if (window._aiWatchPollTimer) {
-    clearInterval(window._aiWatchPollTimer);
-    window._aiWatchPollTimer = null;
-  }
-  try {
-    const r = await _aiFetchNewsHistoryDetail(nid);
-    if (!r.ok) throw new Error(r.error || 'fail');
-    _aiRenderNewsLogDrawer(r);
-  } catch (e) {
-    body.innerHTML = `<div style="color:var(--red);font-size:11px;">${escapeHtml(e.message || String(e))}</div>`;
-  }
-}
-
-function _aiRenderNewsLogDrawer(r) {
-  const log = r.log || {};
-  const flash = log.flash || {};
-  const audit = Array.isArray(log.audit) ? log.audit : [];
-  const sf = r.scores_for_alert || [];
-  const dt = (ts) => ts ? new Date(Number(ts) * 1000).toLocaleString('en-GB', { hour12: false }).replace(',', '') : '—';
-  const kv = (k, v) => v == null || v === '' ? '' : `<div class="k">${k}</div><div class="v">${v}</div>`;
-  const fmt = (n) => (n == null || isNaN(n)) ? '—' : (Math.abs(n) >= 100 ? Number(n).toFixed(2) : Number(n).toFixed(4));
-  const tk = log.display_ticker || log.ticker || '—';
-  const oc = _aiNewsOutcomeClass(log.outcome);
-  const ol = escapeHtml(_aiNewsOutcomeLabel(log.outcome));
-
-  let html = `
-    <div class="ai-d-section">
-      <div class="ai-d-label">Summary</div>
-      <div class="ai-d-kv">
-        ${kv('Ticker', escapeHtml(tk))}
-        ${kv('Time', dt(log.ts))}
-        ${kv('Result', `<span class="ai-news-hist-pill ${oc}" style="vertical-align:middle;">${ol}</span>`)}
-        ${log.outcome_detail ? kv('Detail', escapeHtml(String(log.outcome_detail))) : ''}
-        ${kv('Post price', fmt(log.price))}
-        ${kv('Mcap', log.mcap != null ? escapeHtml(String(log.mcap)) : null)}
-        ${log.headline ? kv('Headline', escapeHtml(String(log.headline))) : ''}
-        ${log.alert_id ? kv('Alert id', '#' + log.alert_id) : ''}
-        ${log.watch_hist_id ? kv('Watch history id', '#' + log.watch_hist_id) : ''}
-      </div>
-    </div>
-  `;
-
-  if (audit.length) {
-    html += `<div class="ai-d-section"><div class="ai-d-label">Audit log (${audit.length})</div>`;
-    for (const e of audit) {
-      const tb = e.ts ? dt(e.ts) : '—';
-      const step = escapeHtml(String(e.step || '?'));
-      const skip = new Set(['ts', 'step']);
-      const rest = {};
-      for (const k of Object.keys(e)) {
-        if (!skip.has(k)) rest[k] = e[k];
-      }
-      let restStr = '';
-      try {
-        const j = JSON.stringify(rest);
-        restStr = j.length > 480 ? j.slice(0, 480) + '…' : j;
-      } catch { restStr = ''; }
-      html += `<div class="ai-d-card" style="font-size:11px;margin-top:6px;"><span style="color:var(--text3);">${tb}</span> · <b>${step}</b>`;
-      if (restStr) {
-        html += `<pre style="margin:6px 0 0;font-size:10px;color:var(--text2);white-space:pre-wrap;word-break:break-word;">${escapeHtml(restStr)}</pre>`;
-      }
-      html += '</div>';
-    }
-    html += '</div>';
-  }
-
-  if (flash && Object.keys(flash).length) {
-    html += `
-    <div class="ai-d-section">
-      <div class="ai-d-label">Flash-Lite grade</div>
-      <div class="ai-d-kv">
-        ${kv('worth_watch', flash.worth_watch != null ? escapeHtml(String(flash.worth_watch)) : null)}
-        ${kv('grade', flash.grade != null ? escapeHtml(String(flash.grade)) : null)}
-        ${flash.reason ? kv('reason', escapeHtml(String(flash.reason).slice(0, 800))) : ''}
-      </div>
-      ${flash.flash_notes ? `<div class="ai-d-card" style="margin-top:8px;font-size:11px;">${escapeHtml(String(flash.flash_notes))}</div>` : ''}
-    </div>`;
-  }
-
-  if (log.raw) {
-    html += `
-    <div class="ai-d-section">
-      <div class="ai-d-label">Raw Discord text</div>
-      <div class="ai-d-card" style="font-size:10px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(String(log.raw).slice(0, 4000))}</div>
-    </div>`;
-  }
-
-  if (sf.length) {
-    const scorerRows = sf.map((h) => {
-      const t = new Date(Number(h.ts) * 1000).toLocaleTimeString('en-GB', { hour12: false });
-      const pat = h.entry_pattern ? `<b>${escapeHtml(String(h.entry_pattern))}</b> · ` : '';
-      return `<div class="ai-watch-rev is-init">
-        <span>${t}</span><span></span>
-        <span style="color:var(--amber);font-weight:700;">${h.score ?? '—'}</span>
-        <span class="dec ${h.decision || 'SKIP'}">★ ${h.decision || '—'}</span>
-        <span>e ${fmt(h.entry)}</span>
-        <span>tp ${fmt(h.tp)} / s ${fmt(h.stop)}</span>
-        <span class="reason">${pat}${escapeHtml(String(h.reason || ''))}</span>
-      </div>`;
-    }).join('');
-    html += `
-    <div class="ai-d-section">
-      <div class="ai-d-label">Main scorer row (same alert)</div>
-      <div style="display:flex;flex-direction:column;gap:4px;">${scorerRows}</div>
-    </div>`;
-  }
-
-  if (log.watch_hist_id) {
-    html += `
-    <div class="ai-d-section">
-      <button type="button" class="ai-queue-view" id="ai-news-open-watch">Open AI watch history #${log.watch_hist_id}</button>
-    </div>`;
-  }
-
-  $('ai-drawer-body').innerHTML = html;
-  $('ai-drawer-title').textContent = tk + ' · news';
-
-  const ow = $('ai-news-open-watch');
-  if (ow && log.watch_hist_id) {
-    ow.addEventListener('click', () => _aiOpenWatchHistoryDrawer(parseInt(log.watch_hist_id, 10)));
-  }
 }
 
 async function _aiOpenWatchHistoryDrawer(histId) {

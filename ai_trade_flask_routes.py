@@ -1006,67 +1006,6 @@ def api_ai_watch_history_detail(hist_id: int):
     )
 
 
-@app.get("/api/ai/news_history")
-def api_ai_news_history():
-    """All #news-scanner pipeline outcomes (including Flash/price skips) for the dashboard log."""
-    db = _ai_db()
-    try:
-        limit = min(max(int(request.args.get("limit", 200)), 1), 500)
-    except ValueError:
-        limit = 200
-    items = db.news_scanner_log_list(limit)
-    try:
-        from ai_sandbox import t212_ai as _t212_ai_disp
-
-        for it in items:
-            tk = (it.get("ticker") or "").strip()
-            if tk:
-                it["display_ticker"] = _t212_ai_disp.display_raw_for(tk)
-    except Exception as exc:
-        _log.debug("news_history display ticker enrich failed: %s", exc)
-    return jsonify(ok=True, items=items)
-
-
-@app.get("/api/ai/news_history/<int:nid>")
-def api_ai_news_history_detail(nid: int):
-    import json as _json
-
-    db = _ai_db()
-    row = db.news_scanner_log_get(nid)
-    if not row:
-        return jsonify(ok=False, error="not_found"), 404
-    h = dict(row)
-    raw_flash = h.pop("flash_json", None)
-    h["flash"] = None
-    if raw_flash:
-        try:
-            h["flash"] = _json.loads(raw_flash)
-        except Exception:
-            h["flash"] = None
-    raw_audit = h.pop("audit_json", None)
-    h["audit"] = None
-    if raw_audit:
-        try:
-            h["audit"] = _json.loads(raw_audit)
-        except Exception:
-            h["audit"] = None
-    sf: list = []
-    if h.get("alert_id"):
-        try:
-            sf = db.scores_for_alert(int(h["alert_id"]))
-        except Exception as exc:
-            _log.debug("news_history scores_for_alert failed: %s", exc)
-    try:
-        from ai_sandbox import t212_ai as _t212_ai_disp
-
-        tk = (h.get("ticker") or "").strip()
-        if tk:
-            h["display_ticker"] = _t212_ai_disp.display_raw_for(tk)
-    except Exception as exc:
-        _log.debug("news_history detail display ticker enrich failed: %s", exc)
-    return jsonify(ok=True, log=h, scores_for_alert=sf)
-
-
 @app.post("/api/ai/admin/wipe-all")
 def api_ai_admin_wipe_all():
     """Option C: cancel T212 orders, market-close positions, wipe SQLite + feeds."""
@@ -1173,6 +1112,34 @@ def api_ai_test_inject():
         "author_id": "0",
         "content": content,
         "channel_id": "test",
+        "guild_id": None,
+        "embeds": 0,
+        "attachments": 0,
+    }
+    with open(feed, "a", encoding="utf-8") as f:
+        f.write(json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return jsonify(ok=True, injected=msg)
+
+
+@app.post("/api/ai/test/inject_news_tester")
+def api_ai_test_inject_news_tester():
+    """Drop a #news-tester shaped post into news_scanner_feed.jsonl (runs GPT grader)."""
+    import datetime as _dt
+
+    payload = request.get_json(silent=True) or {}
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return jsonify(ok=False, error="missing content"), 400
+    from ai_sandbox import config as _aicfg
+
+    feed = _aicfg.NEWS_SCANNER_FEED_PATH
+    feed.parent.mkdir(parents=True, exist_ok=True)
+    msg = {
+        "timestamp": _dt.datetime.utcnow().isoformat() + "+00:00",
+        "author": "TEST_INJECT",
+        "author_id": "0",
+        "content": content,
+        "channel_id": "news_tester",
         "guild_id": None,
         "embeds": 0,
         "attachments": 0,

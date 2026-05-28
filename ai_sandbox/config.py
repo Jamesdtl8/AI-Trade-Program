@@ -274,16 +274,43 @@ def trading_enabled() -> bool:
 
 
 def news_scanner_enabled() -> bool:
-    """Separate Discord #news-scanner / #news-tester pipeline (``news_scanner_feed.jsonl``).
-
-    Production ``#news-scanner`` is off by default. ``#news-tester`` (James server) is on
-    by default for isolated news grading tests. Override with env flags.
-    """
+    """Production ``#news-scanner`` Discord channel (off by default)."""
     raw = (_env("AI_NEWS_SCANNER_ENABLED", "0")).lower()
-    raw_tester = (_env("AI_NEWS_TESTER_ENABLED", "1")).lower()
-    on = raw in ("1", "true", "yes", "on")
-    on_tester = raw_tester in ("1", "true", "yes", "on")
-    return on or on_tester
+    return raw in ("1", "true", "yes", "on")
+
+
+def news_tester_enabled() -> bool:
+    """James server ``#news-tester`` → same GPT grader as all-in-one-scanner (on by default)."""
+    raw = (_env("AI_NEWS_TESTER_ENABLED", "1")).lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def news_feed_enabled() -> bool:
+    """Tail ``news_scanner_feed.jsonl`` when either news channel family is enabled."""
+    return news_scanner_enabled() or news_tester_enabled()
+
+
+def _channel_ids_from_env(name: str) -> frozenset[int]:
+    raw = (_env(name) or "").strip()
+    if not raw:
+        return frozenset()
+    out: set[int] = set()
+    for part in raw.replace(" ", "").split(","):
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            pass
+    return frozenset(out)
+
+
+def news_tester_channel_ids() -> frozenset[int]:
+    return _channel_ids_from_env("AI_NEWS_TESTER_CHANNEL_IDS")
+
+
+def news_scanner_channel_ids() -> frozenset[int]:
+    return _channel_ids_from_env("AI_NEWS_SCANNER_CHANNEL_IDS")
 
 
 def persist_ai_trading_enabled(enabled: bool) -> None:

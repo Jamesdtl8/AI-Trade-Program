@@ -118,7 +118,10 @@ async def process_scanner_alert(
     recent_entry["grader_state"] = st_row.get("state")
     recent_entry["active_label"] = ticker_state.ui_label(st_row)
 
-    ready, why = hard_rules.should_send_to_ai(st_row, alert)
+    if alert.get("source") == "news_tester":
+        ready, why = True, "news_tester_force"
+    else:
+        ready, why = hard_rules.should_send_to_ai(st_row, alert)
     if not ready:
         recent_entry["defer_reason"] = why
         return None

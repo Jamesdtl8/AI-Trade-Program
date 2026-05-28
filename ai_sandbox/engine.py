@@ -62,36 +62,6 @@ def _normalize_scorer_decision(decision: dict[str, Any]) -> None:
         decision["decision"] = raw.strip().upper()
 
 
-def _news_scanner_price_gate(parsed: dict[str, Any], pack: dict[str, Any]) -> tuple[bool, str]:
-    """Block enqueue when recent 1m candles show a hard dump or quote is far from post."""
-    candles = pack.get("candles") or []
-    if len(candles) >= 4:
-        closes: list[float] = []
-        for b in candles[-6:]:
-            c = b.get("c")
-            if c is None:
-                continue
-            try:
-                closes.append(float(c))
-            except (TypeError, ValueError):
-                pass
-        if len(closes) >= 3 and closes[0] > 0:
-            chg = (closes[-1] - closes[0]) / closes[0] * 100.0
-            if chg <= -5.5:
-                return False, "recent_candle_dump"
-    post_price = parsed.get("price")
-    live = pack.get("price")
-    try:
-        live_f = float(live) if live is not None else None
-    except (TypeError, ValueError):
-        live_f = None
-    if post_price is not None and live_f is not None and float(post_price) > 0:
-        drift = abs(live_f - float(post_price)) / float(post_price)
-        if drift > 0.35:
-            return False, "quote_far_from_post"
-    return True, "ok"
-
-
 def _alert_row_summary_db(alert_id: int) -> dict[str, Any] | None:
     if not alert_id:
         return None
@@ -238,18 +208,18 @@ class Engine:
                 except Exception:
                     _log.exception("error handling scanner message")
 
-        async def _news_scanner_tail():
+        async def _news_tester_tail():
             async for msg in news_scanner_feed.tail(interval=1.0, start_at_end=True):
                 try:
-                    await self._handle_news_scanner_message(msg)
+                    await self._handle_news_tester_message(msg)
                 except Exception:
-                    _log.exception("error handling news scanner message")
+                    _log.exception("error handling news-tester message")
 
-        if config.news_scanner_enabled():
-            _log.info("news feed enabled (news-tester and/or news-scanner → news_scanner_feed.jsonl)")
-            await asyncio.gather(_scanner_tail(), _news_scanner_tail())
+        if config.news_feed_enabled():
+            _log.info("news-tester feed enabled → GPT grader (news_scanner_feed.jsonl)")
+            await asyncio.gather(_scanner_tail(), _news_tester_tail())
         else:
-            _log.info("news feed disabled; all-in-one-scanner only")
+            _log.info("news-tester feed disabled; all-in-one-scanner only")
             await _scanner_tail()
 
     # ── periodic ticker-map refresh (6h TTL is internal) ─────────────────
@@ -907,10 +877,24 @@ class Engine:
                 _log.exception("AI position reconciler iteration failed")
                 await asyncio.sleep(config.POSITION_RECONCILE_SLOW_S)
 
-    async def _handle_news_scanner_message(self, msg: dict[str, Any]) -> None:
-        """Discord #news-scanner: audit log only (does not open trades)."""
-        if not config.trading_enabled():
+    async def _handle_news_tester_message(self, msg: dict[str, Any]) -> None:
+        """Discord #news-tester: parse headline post and run the main GPT grader loop."""
+        if not config.trading_enabled() or not config.news_tester_enabled():
             return
+
+        ch_raw = str(msg.get("channel_id") or "").strip()
+        ch_id = int(ch_raw) if ch_raw.isdigit() else None
+        tester_ids = config.news_tester_channel_ids()
+        if ch_raw == "news_tester" or ch_raw.lower() == "test":
+            pass
+        elif tester_ids:
+            if ch_id is None or ch_id not in tester_ids:
+                return
+        elif ch_id is not None:
+            scanner_ids = config.news_scanner_channel_ids()
+            if scanner_ids and ch_id in scanner_ids:
+                return
+
         is_edit = msg.get("event") == "message_edit"
         if is_edit:
             content = (msg.get("content_after") or msg.get("content") or "").strip()
@@ -918,200 +902,69 @@ class Engine:
             content = (msg.get("content") or "").strip()
         if not content:
             return
-
-        audit: list[dict[str, Any]] = [
-            {"ts": time.time(), "step": "received", "edit": bool(is_edit)}
-        ]
-
-        def _log_line(
-            *,
-            ticker: str,
-            headline: str | None,
-            price_v: float | None,
-            mcap_v: float | None,
-            raw: str,
-            outcome: str,
-            outcome_detail: str | None = None,
-            flash_grade: dict[str, Any] | None = None,
-            alert_id: int | None = None,
-            watch_hist_id: int | None = None,
-        ) -> None:
-            try:
-                db.news_scanner_log_insert(
-                    ticker=ticker,
-                    headline=headline,
-                    price=price_v,
-                    mcap=mcap_v,
-                    raw=raw,
-                    outcome=outcome,
-                    outcome_detail=outcome_detail,
-                    flash_grade=flash_grade,
-                    audit=audit,
-                    alert_id=alert_id,
-                    watch_hist_id=watch_hist_id,
-                )
-            except Exception:
-                _log.exception("news_scanner_log_insert failed outcome=%s", outcome)
 
         parsed = news_scanner_parser.parse_news_scanner_post(content)
         if not parsed:
-            _log_line(
-                ticker="",
-                headline=None,
-                price_v=None,
-                mcap_v=None,
-                raw=content,
-                outcome="PARSE_FAIL",
-                outcome_detail="could_not_parse_structure",
-            )
+            _log.info("news-tester parse fail (ignored): %s", content[:120])
             return
 
         ticker = (parsed.get("ticker") or "").strip().upper()
-        headline = (parsed.get("news_headline") or "").strip() or None
-        try:
-            price_v = float(parsed["price"]) if parsed.get("price") is not None else None
-        except (TypeError, ValueError):
-            price_v = None
-        try:
-            mcap_v = float(parsed["market_cap"]) if parsed.get("market_cap") is not None else None
-        except (TypeError, ValueError):
-            mcap_v = None
-        raw_store = content[:3000]
-
-        audit.append(
-            {
-                "ts": time.time(),
-                "step": "parsed",
-                "ticker": ticker,
-                "headline": headline,
-                "price": price_v,
-                "mcap": mcap_v,
-            }
-        )
-
         if not ticker or ticker == "?":
-            _log_line(
-                ticker="",
-                headline=headline,
-                price_v=price_v,
-                mcap_v=mcap_v,
-                raw=raw_store,
-                outcome="PARSE_FAIL",
-                outcome_detail="missing_ticker",
-            )
             return
-
         if t212_ai.resolve_ticker(ticker) is None:
-            _log_line(
-                ticker=ticker,
-                headline=headline,
-                price_v=price_v,
-                mcap_v=mcap_v,
-                raw=raw_store,
-                outcome="FILTER_NOT_ON_T212",
-                outcome_detail="symbol_not_in_t212_instrument_list",
-            )
-            return
+            try:
+                await t212_ai.refresh_ticker_map(force=False)
+            except Exception:
+                _log.debug("news-tester ticker map refresh failed for %s", ticker)
+            if t212_ai.resolve_ticker(ticker) is None:
+                _log.info("news-tester ignored — %s not on T212", ticker)
+                return
 
-        if db.t212_blacklist_get(ticker):
-            _log_line(
-                ticker=ticker,
-                headline=headline,
-                price_v=price_v,
-                mcap_v=mcap_v,
-                raw=raw_store,
-                outcome="FILTER_BLACKLIST",
-            )
-            return
-        if db.offering_block_active(ticker, config.OFFERING_BLOCK_HOURS):
-            _log_line(
-                ticker=ticker,
-                headline=headline,
-                price_v=price_v,
-                mcap_v=mcap_v,
-                raw=raw_store,
-                outcome="FILTER_OFFERING",
-            )
-            return
-
-        paused, _why = self.mgr.entries_paused()
-        if paused:
-            _log_line(
-                ticker=ticker,
-                headline=headline,
-                price_v=price_v,
-                mcap_v=mcap_v,
-                raw=raw_store,
-                outcome="FILTER_PAUSED",
-            )
-            return
-        if self.mgr.ticker_counts().get(ticker, 0) >= config.MAX_SLOTS_PER_TICKER:
-            _log_line(
-                ticker=ticker,
-                headline=headline,
-                price_v=price_v,
-                mcap_v=mcap_v,
-                raw=raw_store,
-                outcome="FILTER_SLOTS",
-            )
-            return
-
-        audit.append(
-            {
-                "ts": time.time(),
-                "step": "logged_only",
-                "note": "news_scanner audit log only — trading uses all-in-one-scanner GPT grader",
-            }
-        )
-        _log_line(
-            ticker=ticker,
-            headline=headline,
-            price_v=price_v,
-            mcap_v=mcap_v,
-            raw=raw_store,
-            outcome="LOGGED",
-            outcome_detail="audit_only_not_traded",
-            alert_id=None,
-        )
-        self._last_event_ts = time.time()
-
-    async def _handle_message(self, msg: dict[str, Any]) -> None:
-        if not config.trading_enabled():
-            return
-        is_edit = msg.get("event") == "message_edit"
-        if is_edit:
-            content = (msg.get("content_after") or msg.get("content") or "").strip()
-        else:
-            content = (msg.get("content") or "").strip()
-        if not content:
-            return
-
-        alert = alert_parser.parse(content)
+        alert: dict[str, Any] = {
+            "type": "SCANNER",
+            "ticker": ticker,
+            "price": parsed.get("price"),
+            "market_cap": parsed.get("market_cap"),
+            "news_headline": parsed.get("news_headline"),
+            "rank": 1,
+            "rv": 50.0,
+            "label": "MOMENTUM",
+            "source": "news_tester",
+            "raw": content,
+        }
         mid = (msg.get("message_id") or "").strip()
         if mid:
             alert["discord_message_id"] = mid
         if is_edit:
             alert["discord_message_edit"] = True
         alert["discord_ts"] = msg.get("timestamp")
+
+        await self._run_scanner_grader_path(msg, alert, content, is_edit=is_edit)
+
+    async def _run_scanner_grader_path(
+        self,
+        msg: dict[str, Any],
+        alert: dict[str, Any],
+        content: str,
+        *,
+        is_edit: bool,
+    ) -> None:
         ticker = (alert.get("ticker") or "").upper() or None
         atype = alert.get("type", "UNKNOWN")
-
-        # ── Not on T212: skip DB, Gemini, filters, queue (hourly instrument map) ─
-        if ticker and t212_ai.resolve_ticker(ticker) is None:
-            return
 
         self._scan_count += 1
         self._last_event_ts = time.time()
 
         raw_for_db = json.dumps(msg, ensure_ascii=False) if is_edit else content
-        db_type = "SCANNER_EDIT" if is_edit else atype
+        db_type = "NEWS_TESTER" if alert.get("source") == "news_tester" else (
+            "SCANNER_EDIT" if is_edit else atype
+        )
         alert_id = db.log_alert(ticker, db_type, raw_for_db, alert)
         recent_entry = {"ts": time.time(), "alert_id": alert_id, **alert, "event": msg.get("event")}
         self._scanner_recent.append(recent_entry)
         if len(self._scanner_recent) > self._scanner_recent_max:
             self._scanner_recent.pop(0)
 
-        # ── per-ticker context (prev rv/pct, halts, cadence) ───────────────
         context: dict[str, Any] = {}
         if ticker:
             context = ticker_context.build(ticker, {**alert, "_alert_id": alert_id})
@@ -1184,7 +1037,32 @@ class Engine:
                 )
             except Exception:
                 _log.exception("watch_episode_ensure_open failed for %s", ticker)
+
+    async def _handle_message(self, msg: dict[str, Any]) -> None:
+        if not config.trading_enabled():
             return
+        is_edit = msg.get("event") == "message_edit"
+        if is_edit:
+            content = (msg.get("content_after") or msg.get("content") or "").strip()
+        else:
+            content = (msg.get("content") or "").strip()
+        if not content:
+            return
+
+        alert = alert_parser.parse(content)
+        mid = (msg.get("message_id") or "").strip()
+        if mid:
+            alert["discord_message_id"] = mid
+        if is_edit:
+            alert["discord_message_edit"] = True
+        alert["discord_ts"] = msg.get("timestamp")
+        ticker = (alert.get("ticker") or "").upper() or None
+
+        # ── Not on T212: skip DB, Gemini, filters, queue (hourly instrument map) ─
+        if ticker and t212_ai.resolve_ticker(ticker) is None:
+            return
+
+        await self._run_scanner_grader_path(msg, alert, content, is_edit=is_edit)
 
     def _record_slots_full_rejection(
         self,
