@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+ENV/
+
+# Secrets — never commit; use .env.example as template
+.env
+.env.local
+.env.*.local
+
+# Runtime / local data (SQLite, scanner feeds, tail offsets)
+ai_sandbox/data/*.db
+ai_sandbox/data/*.db-*
+ai_sandbox/data/*.jsonl
+ai_sandbox/data/*.pos
+ai_sandbox/data/ai_trading_enabled_state
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Logs
+*.log
