@@ -684,6 +684,30 @@ def scores_for_alert(alert_id: int) -> list[dict[str, Any]]:
     return out
 
 
+def ai_decisions_for_alert(alert_id: int) -> list[dict[str, Any]]:
+    """GPT grader rows from ai_decisions for one alert id."""
+    rows = fetchall(
+        """SELECT id, ts, ticker, alert_number, grade, action, entry_price, target_price,
+                  latency_ms, cost_gbp, ai_input, ai_output_json
+             FROM ai_decisions
+            WHERE alert_id=?
+            ORDER BY ts ASC, id ASC""",
+        (int(alert_id),),
+    )
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        item = dict(r)
+        raw = item.pop("ai_output_json", None)
+        item["ai_output"] = None
+        if raw:
+            try:
+                item["ai_output"] = json.loads(str(raw))
+            except Exception:
+                item["ai_output"] = None
+        out.append(item)
+    return out
+
+
 def block_offering(ticker: str) -> None:
     execute(
         "INSERT OR REPLACE INTO offering_blocks(ticker, ts) VALUES(?,?)",

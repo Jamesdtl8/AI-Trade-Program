@@ -2228,8 +2228,6 @@
     border-radius: 3px; background: var(--bg3); color: var(--text2); display: inline-block;
   }
   .ai-feed-type.SCANNER { color: var(--blue); background: var(--blue-dim); }
-  .ai-feed-type.FIRE { color: var(--amber); background: var(--amber-dim); }
-  .ai-feed-type.WHALE { color: #c084fc; background: rgba(192,132,252,0.12); }
   .ai-feed-type.HALT, .ai-feed-type.OFFERING { color: var(--red); background: var(--red-dim); }
   .ai-feed-rank {
     font-family: var(--mono); font-size: 10px; color: var(--text3);
@@ -3626,6 +3624,16 @@ function _aiHumanReason(code) {
     ai_pass: 'AI Pass',
     disqualified: 'Disqualified',
     ai_parse_failed: 'AI response parse failed',
+    alert_1_accumulating: 'Alert 1 — accumulating (GPT grades at alert 3)',
+    alert_2_accumulating: 'Alert 2 — accumulating (GPT grades at alert 3)',
+    alert_2_early_promotion: 'Alert 2 — early promotion, sent to GPT',
+    alert_3_standard: 'Alert 3 — sent to GPT grader',
+    continuation_watch: 'Continuation watch — sent to GPT',
+    not_ready: 'Waiting for more scanner alerts before GPT',
+    no_momentum_label_at_3: 'Deferred — no MOMENTUM/BREAKOUT label at alert 3',
+    price_not_higher_than_alert_2: 'Deferred — price not above alert 2',
+    negative_news: 'Skipped — negative news headline',
+    news_tester_force: 'News tester — forced GPT grade',
   };
   const k = String(code);
   if (map[k]) return map[k];
@@ -3777,7 +3785,9 @@ function _aiFeedSection(title, items, cls, sectionKey) {
 function _aiRenderFeed(fd) {
   const root = $('ai-feed');
   if (!root) return;
-  const items = ((fd && fd.items) || []).slice();
+  const items = ((fd && fd.items) || [])
+    .filter((m) => !['FIRE', 'WHALE'].includes(m.type))
+    .slice();
   _aiFeedItems = items;
   _aiFeedRefreshTickerList();
   _aiFeedRender();
@@ -4009,7 +4019,7 @@ function _aiRenderWatchDrawer(r, ticker) {
     <div class="ai-d-section" style="color:var(--text3);font-size:10px;line-height:1.5;">
       ★ initial score · ↻ periodic re-score (every ${interval}s).
       Watch is dropped when the scorer says SKIP, score &lt; ${r.drop_score}, or after ${r.max_reviews} reviews.
-      Upgraded to TRADE if a slot is open and Claude says TRADE with score ≥ trade threshold.
+      Upgraded to TRADE if a slot is open and GPT says TRADE with score ≥ trade threshold.
       Refreshes every 15 s while open.
     </div>`;
   $('ai-drawer-body').innerHTML = html;
@@ -4018,25 +4028,37 @@ function _aiRenderWatchDrawer(r, ticker) {
 function _aiRenderDrawer(r) {
   const a = r.alert || {};
   const s = r.score;
+  const g = r.grader || {};
+  const aiDecs = r.ai_decisions || [];
+  const latestAi = aiDecs.length ? aiDecs[aiDecs.length - 1] : null;
   const m = r.monitor || [];
   const tr = r.trade;
   const parsed = a.parsed_json ? (() => { try { return JSON.parse(a.parsed_json); } catch { return {}; } })() : {};
   const scoreJson = s && s.raw_json ? (() => { try { return JSON.parse(s.raw_json); } catch { return {}; } })() : {};
-  const flags = s && s.risk_flags ? (() => { try { return JSON.parse(s.risk_flags); } catch { return []; } })() : [];
+  const aiOut = latestAi && latestAi.ai_output ? latestAi.ai_output : {};
+  const flags = s && s.risk_flags
+    ? (() => { try { return JSON.parse(s.risk_flags); } catch { return []; } })()
+    : (aiOut.risk_flags || []);
 
   const title = `${a.ticker || '?'}  ·  ${a.type || ''}`;
   $('ai-drawer-title').textContent = title;
 
   const newsPill = a.news_class ? `<span class="ai-d-pill ${a.news_class === 'POSITIVE' ? 'pos' : a.news_class === 'NEGATIVE' ? 'neg' : a.news_class === 'SQUEEZE' ? 'sqz' : 'skip'}">${a.news_class}</span>` : '';
-  const decPill = s ? `<span class="ai-d-pill ${s.decision === 'TRADE' ? 'trade' : s.decision === 'WATCH-NEWS' ? 'watch-news' : s.decision === 'WATCH' ? 'watch' : 'skip'}">${s.decision} · ${s.score}</span>` : '';
+  const graderPill = g.active_label
+    ? `<span class="ai-d-pill ${g.active_label === 'TRADE' ? 'trade' : g.active_label === 'FILTERED' ? 'skip' : 'watch'}">${g.active_label}</span>`
+    : '';
+  const decPill = s
+    ? `<span class="ai-d-pill ${s.decision === 'TRADE' ? 'trade' : s.decision === 'WATCH-NEWS' ? 'watch-news' : s.decision === 'WATCH' ? 'watch' : 'skip'}">${s.decision} · ${s.score}</span>`
+    : (latestAi ? `<span class="ai-d-pill ${latestAi.action === 'TRADE' ? 'trade' : latestAi.action === 'MONITOR' ? 'watch' : 'skip'}">${latestAi.grade || latestAi.action || 'GPT'}</span>` : '');
 
   const kv = (k, v) => v == null || v === '' ? '' : `<div class="k">${k}</div><div class="v">${v}</div>`;
+  const esc = (x) => String(x || '').replace(/</g, '&lt;');
 
   let html = `
     <div class="ai-d-section">
       <div class="ai-d-label">Raw message</div>
-      <div class="ai-d-card">${(a.raw || '').replace(/</g,'&lt;')}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">${newsPill} ${decPill}</div>
+      <div class="ai-d-card">${esc(a.raw)}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${newsPill} ${graderPill} ${decPill}</div>
     </div>
 
     <div class="ai-d-section">
@@ -4056,10 +4078,29 @@ function _aiRenderDrawer(r) {
     </div>
   `;
 
-  if (s) {
+  if (latestAi) {
+    const reason = aiOut.reason || aiOut.summary || scoreJson.reason || s?.reason || '—';
     html += `
       <div class="ai-d-section">
-        <div class="ai-d-label">AI score (Claude)</div>
+        <div class="ai-d-label">GPT grader</div>
+        <div class="ai-d-kv">
+          ${kv('grade', latestAi.grade)}
+          ${kv('action', latestAi.action)}
+          ${kv('entry', latestAi.entry_price)}
+          ${kv('target', latestAi.target_price)}
+          ${kv('latency', latestAi.latency_ms != null ? latestAi.latency_ms + ' ms' : null)}
+          ${kv('cost', latestAi.cost_gbp != null ? '£' + Number(latestAi.cost_gbp).toFixed(4) : null)}
+        </div>
+        <div class="ai-d-label" style="margin-top:6px;">Reasoning</div>
+        <div class="ai-d-card">${esc(reason)}</div>
+        ${flags.length ? `<div class="ai-d-label" style="margin-top:6px;">Risk flags</div>
+          <div class="ai-d-card">${flags.map((f) => '• ' + String(f)).join('\n')}</div>` : ''}
+      </div>
+    `;
+  } else if (s) {
+    html += `
+      <div class="ai-d-section">
+        <div class="ai-d-label">GPT grader</div>
         <div class="ai-d-kv">
           ${kv('decision', s.decision)}
           ${kv('score', s.score)}
@@ -4068,19 +4109,37 @@ function _aiRenderDrawer(r) {
           ${kv('stop', s.stop)}
           ${kv('tp_pct', scoreJson.tp_pct)}
           ${kv('stop_pct', scoreJson.stop_pct)}
-          ${kv('thinking', s.thinking_used ? 'enabled' : 'off')}
         </div>
         <div class="ai-d-label" style="margin-top:6px;">Reasoning</div>
-        <div class="ai-d-card">${(s.reason || '—').replace(/</g,'&lt;')}</div>
+        <div class="ai-d-card">${esc(s.reason || '—')}</div>
         ${flags.length ? `<div class="ai-d-label" style="margin-top:6px;">Risk flags</div>
-          <div class="ai-d-card">${flags.map(f => '• ' + String(f)).join('\n')}</div>` : ''}
+          <div class="ai-d-card">${flags.map((f) => '• ' + String(f)).join('\n')}</div>` : ''}
       </div>
     `;
   } else {
     html += `
       <div class="ai-d-section">
-        <div class="ai-d-label">AI score</div>
-        <div class="ai-d-card" style="color:var(--text3);">No score — alert was rejected by the hard filter before the Claude call.</div>
+        <div class="ai-d-label">GPT grader</div>
+        <div class="ai-d-kv">
+          ${kv('Status', g.active_label || g.state || '—')}
+          ${g.alert_count ? kv('Alerts today', g.alert_count) : ''}
+          ${g.defer_code ? kv('Stage', _aiHumanReason(g.defer_code)) : ''}
+        </div>
+        <div class="ai-d-card" style="color:var(--text2);">${esc(g.status_message || 'No GPT grade yet for this alert.')}</div>
+      </div>
+    `;
+  }
+
+  if (aiDecs.length > 1) {
+    html += `
+      <div class="ai-d-section">
+        <div class="ai-d-label">GPT calls for this alert (${aiDecs.length})</div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          ${aiDecs.map((d) => {
+            const t = d.ts ? new Date(d.ts * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
+            return `<div class="ai-d-card" style="font-size:11px;"><span style="color:var(--text3);">${t}</span> · ${esc(d.grade)} / ${esc(d.action)} · entry ${esc(d.entry_price)}</div>`;
+          }).join('')}
+        </div>
       </div>
     `;
   }
@@ -4408,6 +4467,7 @@ function _aiRenderWatchHistoryDrawer(r) {
   const init = hist.find((h) => !h.is_review);
   const audit = w.audit != null ? w.audit : null;
   const sf = r.scores_for_alert || [];
+  const aiDecs = r.ai_decisions || [];
   const wp = r.watch_period || null;
   const wpScores = (r.watch_period_scores || []).length ? r.watch_period_scores : [];
   const ep = w.episode_type || 'WATCH';
@@ -4679,7 +4739,26 @@ function _aiRenderWatchHistoryDrawer(r) {
 
   let timelineHtml = '';
   let timelineTitle = '';
-  if (sf.length) {
+  if (aiDecs.length) {
+    timelineTitle = `GPT grader (${aiDecs.length})`;
+    timelineHtml = aiDecs
+      .map((d) => {
+        const t = d.ts ? new Date(d.ts * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
+        const out = d.ai_output || {};
+        const reason = out.reason || out.summary || '';
+        return `
+        <div class="ai-watch-rev is-init">
+          <span>${t}</span>
+          <span style="color:var(--text3);">#${d.alert_number || '?'}</span>
+          <span style="color:var(--amber);font-weight:700;">${escapeHtml(String(d.grade || '—'))}</span>
+          <span class="dec">${escapeHtml(String(d.action || '—'))}</span>
+          <span>e ${fmt(d.entry_price)}</span>
+          <span>tp ${fmt(d.target_price)}</span>
+          <span class="reason">${escapeHtml(String(reason).slice(0, 240))}</span>
+        </div>`;
+      })
+      .join('');
+  } else if (sf.length) {
     timelineTitle = isTrade ? `Decision timeline — alert #${w.alert_id || '?'}` : `Decision timeline (${sf.length})`;
     timelineHtml = scorerRowsHtml(sf, !isTrade && !!init);
   } else if (!isTrade && hist.length) {
@@ -4692,8 +4771,15 @@ function _aiRenderWatchHistoryDrawer(r) {
       <div class="ai-d-label">${timelineTitle}</div>
       <div style="display:flex;flex-direction:column;gap:4px;">${timelineHtml}</div>
     </div>`;
-  } else if (!isTrade && !sf.length && !hist.length) {
-    html += `<div class="ai-d-section"><div class="ai-d-label">Decision timeline</div><div style="color:var(--text3);font-size:11px;">No score rows recorded.</div></div>`;
+  } else if (!isTrade && !sf.length && !hist.length && !aiDecs.length) {
+    const accEv = evs.find((e) => e.kind === 'accumulating');
+    const disEv = evs.find((e) => e.kind === 'disqualified');
+    let msg = 'No GPT grade recorded for this episode.';
+    if (accEv && accEv.reason) msg = String(accEv.reason);
+    else if (disEv && disEv.reason) msg = String(disEv.reason);
+    else if (isLive || w.reason === 'WATCH_ACTIVE') msg = 'Accumulating scanner alerts — GPT grades at alert 3.';
+    else if (w.final_reason) msg = String(w.final_reason);
+    html += `<div class="ai-d-section"><div class="ai-d-label">Decision timeline</div><div style="color:var(--text3);font-size:11px;">${escapeHtml(msg)}</div></div>`;
   }
 
   if (w.final_reason && (!isTrade || !audit)) {

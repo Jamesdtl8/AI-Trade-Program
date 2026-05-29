@@ -22,6 +22,89 @@ def _ai_config():
     return _ai_cfg
 
 
+def _grader_drawer_context(db, alert: dict) -> dict:
+    """Grader status for the alert detail drawer (accumulating vs filtered vs graded)."""
+    import json as _json
+
+    from ai_sandbox import human_labels
+    from ai_sandbox.grader import state as grader_state
+
+    tk = (alert.get("ticker") or "").strip().upper()
+    alert_ts = float(alert.get("ts") or 0)
+    alert_id = alert.get("id")
+
+    st_row = None
+    if tk and alert_ts:
+        st_row = grader_state.all_for_date(db.uk_date_iso(alert_ts)).get(tk)
+    if not st_row and tk:
+        st_row = grader_state.get_or_create(tk, ts=alert_ts or None)
+
+    st = str(st_row.get("state") or "") if st_row else ""
+    alert_count = len(st_row.get("alerts") or []) if st_row else 0
+    disqual = st_row.get("disqualify_reason") if st_row else None
+    active_label = grader_state.ui_label(st_row) if st_row else None
+
+    defer_code = None
+    if alert_id:
+        wh = db.fetchone(
+            "SELECT audit_json FROM watch_history WHERE alert_id=? ORDER BY id DESC LIMIT 1",
+            (int(alert_id),),
+        )
+        if wh and wh.get("audit_json"):
+            try:
+                audit = _json.loads(wh["audit_json"])
+                for ev in reversed(audit.get("events") or []):
+                    if ev.get("kind") == "accumulating" and int(ev.get("alert_id") or 0) == int(alert_id):
+                        defer_code = ev.get("defer_code")
+                        break
+            except Exception:
+                pass
+
+    phase = "pending"
+    message = "No GPT grade yet for this alert."
+
+    if st == "DISQUALIFIED" or disqual:
+        phase = "filtered"
+        message = human_labels.humanize(disqual or "disqualified")
+    elif st == "PASS":
+        phase = "filtered"
+        message = human_labels.humanize("ai_pass")
+    elif st == "PENDING_AI":
+        phase = "review"
+        message = "Sent to GPT grader — awaiting response."
+    elif st in ("WATCH", "TRADE") and st_row:
+        phase = "graded"
+        action = str(st_row.get("ai_decision") or "").upper()
+        if action in ("TRADE", "MONITOR", "PASS"):
+            message = human_labels.humanize(action)
+        elif st == "TRADE":
+            message = "GPT graded — trade"
+        else:
+            message = "GPT graded — monitor (watch)"
+    elif defer_code:
+        phase = "accumulating"
+        message = human_labels.humanize(defer_code)
+    elif st in ("NEW", "WATCHING"):
+        phase = "accumulating"
+        if alert_count <= 1:
+            defer_code = defer_code or "alert_1_accumulating"
+        elif alert_count == 2:
+            defer_code = defer_code or "alert_2_accumulating"
+        else:
+            defer_code = defer_code or "not_ready"
+        message = human_labels.humanize(defer_code)
+
+    return {
+        "state": st,
+        "alert_count": alert_count,
+        "active_label": active_label,
+        "disqualify_reason": disqual,
+        "defer_code": defer_code,
+        "phase": phase,
+        "status_message": message,
+    }
+
+
 def _ai_t212():
     from ai_sandbox import t212_ai
 
@@ -478,9 +561,10 @@ def api_ai_feed():
     Joins alerts with their latest score (if any) so the row shows the final
     decision tag without a second round trip.
 
-    One row per ticker (newest alert only): repeated WHALE pings for the same
+    One row per ticker (newest alert only): repeated pings for the same
     symbol are collapsed. The DB scan uses a larger cap so we still return up to
     ``limit`` distinct tickers when one name dominates recent traffic.
+    FIRE and WHALE alert types are ignored entirely.
     """
     db = _ai_db()
     try:
@@ -528,6 +612,8 @@ def api_ai_feed():
     items = []
     for r in rows:
         d = dict(r)
+        if d.get("type") in ("FIRE", "WHALE"):
+            continue
         parsed = {}
         if d.get("parsed_json"):
             try:
@@ -665,8 +751,8 @@ def api_ai_monitor(trade_id: int):
 
 @app.get("/api/ai/alert/<int:alert_id>")
 def api_ai_alert(alert_id: int):
-    """Full breakdown for one scanner alert: parsed payload, filter, news class,
-    score (with reasoning + risk flags) and monitor log if it became a trade."""
+    """Full breakdown for one scanner alert: parsed payload, grader state,
+    GPT decisions, legacy score row, and monitor log if it became a trade."""
     db = _ai_db()
     alert = db.fetchone(
         "SELECT id, ts, ticker, type, raw, parsed_json, news_class FROM alerts WHERE id=?",
@@ -681,6 +767,8 @@ def api_ai_alert(alert_id: int):
         (alert_id,),
     )
     score = dict(score_row) if score_row else None
+    ai_decisions = db.ai_decisions_for_alert(alert_id)
+    grader = _grader_drawer_context(db, {**a, "id": alert_id})
     trade_row = None
     monitor: list = []
     if score:
@@ -710,6 +798,8 @@ def api_ai_alert(alert_id: int):
         ok=True,
         alert=a,
         score=score,
+        grader=grader,
+        ai_decisions=ai_decisions,
         trade=trade_row if trade_row else None,
         monitor=monitor,
     )
@@ -719,7 +809,7 @@ def api_ai_alert(alert_id: int):
 def api_ai_watch_detail(ticker: str):
     """Return the watch-queue entry for a ticker plus its full re-evaluation
     log (initial score + every periodic review) so the dashboard can show
-    how Claude's view of the setup is evolving while it sits on watch.
+    how GPT's view of the setup is evolving while it sits on watch.
     """
     import json as _json
 
@@ -888,11 +978,16 @@ def api_ai_watch_history_detail(hist_id: int):
             h["audit"] = None
 
     sf: list = []
+    ai_decisions: list = []
     if h.get("alert_id"):
         try:
             sf = db.scores_for_alert(int(h["alert_id"]))
         except Exception as exc:
             _log.debug("scores_for_alert failed id=%s: %s", h.get("alert_id"), exc)
+        try:
+            ai_decisions = db.ai_decisions_for_alert(int(h["alert_id"]))
+        except Exception as exc:
+            _log.debug("ai_decisions_for_alert failed id=%s: %s", h.get("alert_id"), exc)
 
     watch_period: dict | None = None
     wp_scores: list = []
@@ -968,6 +1063,7 @@ def api_ai_watch_history_detail(hist_id: int):
         watch=h,
         history=history,
         scores_for_alert=sf,
+        ai_decisions=ai_decisions,
         watch_period=watch_period,
         watch_period_scores=wp_scores,
         is_live=is_live,

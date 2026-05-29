@@ -1002,6 +1002,8 @@ class Engine:
             db.set_alert_news_class(alert_id, news_class)
             recent_entry["news_class"] = news_class
             if news_class == "NEGATIVE":
+                recent_entry["active_label"] = "FILTERED"
+                recent_entry["disqualify_reason"] = "negative_news"
                 return
 
         paused, why = self.mgr.entries_paused()
@@ -1063,6 +1065,8 @@ class Engine:
             return
 
         alert = alert_parser.parse(content)
+        if alert.get("type") in ("FIRE", "WHALE"):
+            return
         mid = (msg.get("message_id") or "").strip()
         if mid:
             alert["discord_message_id"] = mid

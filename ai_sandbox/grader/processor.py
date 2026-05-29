@@ -124,6 +124,22 @@ async def process_scanner_alert(
         ready, why = hard_rules.should_send_to_ai(st_row, alert)
     if not ready:
         recent_entry["defer_reason"] = why
+        try:
+            db.watch_episode_ensure_open(
+                tk,
+                alert_id=alert_id,
+                added_ts=time.time(),
+                event={
+                    "kind": "accumulating",
+                    "ts": time.time(),
+                    "alert_id": alert_id,
+                    "alert_number": len(st_row.get("alerts") or []),
+                    "defer_code": why,
+                    "reason": human_labels.humanize(why),
+                },
+            )
+        except Exception:
+            _log.exception("watch_episode accumulating log failed for %s", tk)
         return None
 
     ticker_state.update(tk, {"state": "PENDING_AI"})
