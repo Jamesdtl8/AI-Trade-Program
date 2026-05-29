@@ -11,7 +11,7 @@ REVIEW_REGRADE_WINDOW_SEC = 24 * 3600
 REGRADE_ELIGIBLE_STATES = frozenset({"WATCH", "PASS", "WATCHING", "PENDING_AI"})
 MC_LIMIT = 100_000_000
 PRICE_MIN = 0.10
-RV_MIN = 1.0
+RV_MIN = 5.0  # Raised from 1x — sub-5x is noise, not momentum
 MOMENTUM_LABELS = {"MOMENTUM", "BREAKOUT"}
 WEAK_LABELS = {"NBREAK", "REV V"}
 SQUEEZE_TAGS = {
@@ -33,6 +33,7 @@ RV_ABSOLUTE_FLOOR = 25.0
 LABEL_OVERRIDE_RV = 100.0
 LABEL_OVERRIDE_PCT = 40.0
 LABEL_OVERRIDE_SQUEEZE_RV = 50.0
+ALERT_2_RV_MIN = 50.0  # Minimum RV to send alert-2 to AI — below this it's not a real mover
 
 PERMANENT_DISQUALIFY = frozenset(
     {
@@ -324,6 +325,11 @@ def should_send_to_ai(state: dict[str, Any], alert: dict[str, Any]) -> tuple[boo
             return False, "no_momentum_label_at_2"
         if price <= float(alert_1.get("price") or 0.0):
             return False, "price_not_higher_than_alert_1"
+        # Require minimum RV at alert 2 — low-RV setups don't have the buying pressure
+        # needed to reach a 7.5% target. Below 50x is noise, not momentum.
+        rv_at_2 = float(alert.get("rv") or 0.0)
+        if rv_at_2 < ALERT_2_RV_MIN:
+            return False, "alert_2_rv_too_low"
         return True, "alert_2_standard"
 
     if alert_count == 1:

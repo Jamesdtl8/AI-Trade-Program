@@ -50,6 +50,8 @@ _LABELS: dict[str, str] = {
     "grader_in_flight": "GPT review in progress — will retry on next alert",
     "sell_in_flight": "Sell order in flight — waiting for broker confirmation",
     "watch_momentum_regrade": "WATCH — strong momentum regrade triggered",
+    "alert_2_rv_too_low": "Alert 2 deferred — RV below 50x (not enough momentum yet)",
+    "g2_partial_g3_weak_cap": "Capped at WATCH — no named news + weak squeeze structure",
     "news_tester_force": "News tester — forced GPT grade",
     "negative_news": "Skipped — negative news headline",
     "not_on_t212": "Filtered — not on Trading 212",

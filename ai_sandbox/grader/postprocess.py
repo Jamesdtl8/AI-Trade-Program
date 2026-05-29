@@ -110,8 +110,10 @@ def compute_entry_target(alerts: list[dict[str, Any]]) -> tuple[float, float, fl
     return entry, target, anchor
 
 
-def _gate_passes(gate_val: str | None, *, allow_partial: bool = False) -> bool:
+def _gate_passes(gate_val: str | None, *, allow_partial: bool = False, require_strong: bool = False) -> bool:
     g = str(gate_val or "").upper()
+    if require_strong:
+        return g == "PASS_STRONG"
     if g.startswith("PASS"):
         return True
     return allow_partial and g == "PARTIAL"
@@ -531,6 +533,32 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
         note = mismatch
         if note not in flags:
             flags.append(note)
+
+    # Gate 2 PARTIAL + Gate 3 weak → force WATCH.
+    # No named news catalyst AND no strong structural squeeze backing = high reversal risk.
+    # The pattern in losses: BIYA, CREG, PRFX — all G2=PARTIAL/FAIL, G3 ≤ PASS.
+    # Exemptions: Known Runner override (kr_override) already bypasses news requirement
+    # deliberately; News Momentum Override requires G2=PASS (named news) so never hits here.
+    if (
+        action == "TRADE"
+        and not kr_override
+        and str(gates.get("gate_2") or "").upper() in ("PARTIAL", "FAIL")
+        and not _gate_passes(gates.get("gate_3"), require_strong=True)
+    ):
+        note = "No named news catalyst + weak structural squeeze → capping at WATCH"
+        if note not in flags:
+            flags.append(note)
+        history = list(ctx.get("grade_change_history") or [])
+        history.append(
+            {
+                "from": grade,
+                "to": "WATCH",
+                "reason": "g2_partial_g3_weak_cap",
+            }
+        )
+        ctx["grade_change_history"] = history
+        grade = "WATCH"
+        action = "MONITOR"
 
     # The alert-2 dual-MOMENTUM guard applies to ALL alert-2 TRADE decisions,
     # including reentry episodes. A reentry at alert 2 has even less track record

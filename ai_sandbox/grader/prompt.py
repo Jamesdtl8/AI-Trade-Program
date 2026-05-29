@@ -77,6 +77,7 @@ Whale SELL in sequence → add to risk_flags, do not auto-downgrade
 Borrow confirmation alert fired → strengthens Gate 3, note CTB value
 
 ALERT 2 INITIAL GRADE (exactly 2 alerts in history)
+Python has already verified RV ≥50x at alert 2 before calling you — this is a real mover.
 This is an early entry look — be open to STRONG when structure is exceptional.
 STRONG at alert 2: Gate1 PASS or stronger + Gate3 PASS or stronger + Gate4 PASS or PARTIAL + price rising + MOMENTUM/BREAKOUT label. Gate2 may be PARTIAL or FAIL (override applies). Do not require three alerts for a STRONG if float is tight and squeeze flags are present.
 WATCH at alert 2: Gate1 PASS or PARTIAL + Gate4 at least PARTIAL + at least one of Gate2/Gate3 at PASS or PARTIAL
