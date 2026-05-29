@@ -80,6 +80,17 @@ CREATE TABLE IF NOT EXISTS monitor_log (
 );
 CREATE INDEX IF NOT EXISTS idx_monitor_trade ON monitor_log(trade_id, ts);
 
+CREATE TABLE IF NOT EXISTS trade_ticks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_id INTEGER NOT NULL,
+  ts REAL NOT NULL,
+  elapsed_sec REAL,
+  price REAL,
+  unreal_pct REAL,
+  unreal_gbp REAL
+);
+CREATE INDEX IF NOT EXISTS idx_trade_ticks ON trade_ticks(trade_id, ts);
+
 CREATE TABLE IF NOT EXISTS offering_blocks (
   ticker TEXT PRIMARY KEY,
   ts REAL NOT NULL
@@ -233,6 +244,7 @@ _TRADE_EXTRA_COLS: tuple[tuple[str, str], ...] = (
     ("sim_outcome_pct", "REAL"),
     ("sim_hit_tp", "INTEGER"),
     ("miss_monitor_end_ts", "REAL"),
+    ("peak_price", "REAL"),
 )
 
 
@@ -243,6 +255,20 @@ def _migrate_trades_columns(c: sqlite3.Connection) -> None:
         if name not in cols:
             c.execute(f"ALTER TABLE trades ADD COLUMN {name} {typ}")
 
+
+
+_TICKER_STATE_EXTRA_COLS: tuple[tuple[str, str], ...] = (
+    ("reentry_active", "INTEGER NOT NULL DEFAULT 0"),
+    ("prior_trade_json", "TEXT"),
+)
+
+
+def _migrate_ticker_state_columns(c: sqlite3.Connection) -> None:
+    cur = c.execute("PRAGMA table_info(ticker_states)")
+    cols = {str(row[1]) for row in cur.fetchall()}
+    for name, typ in _TICKER_STATE_EXTRA_COLS:
+        if name not in cols:
+            c.execute(f"ALTER TABLE ticker_states ADD COLUMN {name} {typ}")
 
 
 def _migrate_watch_history_ai_columns(c: sqlite3.Connection) -> None:
@@ -274,6 +300,7 @@ def _connect() -> sqlite3.Connection:
     c.execute("PRAGMA synchronous=NORMAL;")
     c.executescript(_SCHEMA)
     _migrate_trades_columns(c)
+    _migrate_ticker_state_columns(c)
     _migrate_watch_history_ai_columns(c)
     _conn = c
     return c
@@ -651,8 +678,14 @@ def combined_llm_usage_stats_since(cutoff_ts: float) -> dict[str, Any]:
     return {
         "sum_gbp": round(float(g["sum_gbp"]) + float(o["sum_gbp"]), 6),
         "calls": int(g["calls"]) + int(o["calls"]),
+        "gemini_calls": int(g["calls"]),
+        "openai_calls": int(o["calls"]),
         "input_tokens": int(g["input_tokens"]) + int(o["input_tokens"]),
         "output_tokens": int(g["output_tokens"]) + int(o["output_tokens"]),
+        "gemini_input_tokens": int(g["input_tokens"]),
+        "gemini_output_tokens": int(g["output_tokens"]),
+        "openai_input_tokens": int(o["input_tokens"]),
+        "openai_output_tokens": int(o["output_tokens"]),
         "gemini_gbp": float(g["sum_gbp"]),
         "openai_gbp": float(o["sum_gbp"]),
     }
@@ -684,6 +717,45 @@ def scores_for_alert(alert_id: int) -> list[dict[str, Any]]:
     return out
 
 
+def trade_peak_price(trade_id: int) -> float | None:
+    row = fetchone("SELECT peak_price FROM trades WHERE id=?", (int(trade_id),))
+    if not row or row["peak_price"] is None:
+        return None
+    try:
+        return float(row["peak_price"])
+    except (TypeError, ValueError):
+        return None
+
+
+def trade_update_peak_price(trade_id: int, peak: float) -> float:
+    """Persist peak mark for trailing stop; returns stored peak."""
+    pk = float(peak)
+    cur = trade_peak_price(trade_id)
+    if cur is not None and cur >= pk:
+        return cur
+    execute("UPDATE trades SET peak_price=? WHERE id=? AND status='OPEN'", (pk, int(trade_id)))
+    return pk
+
+
+def last_ai_decision_for_ticker(
+    ticker: str,
+    *,
+    within_sec: float = 86400.0,
+) -> dict[str, Any] | None:
+    """Most recent GPT grader row for a ticker within the last ``within_sec`` seconds."""
+    cutoff = time.time() - float(within_sec)
+    row = fetchone(
+        """SELECT id, ts, ticker, alert_number, alert_id, grade, action,
+                  entry_price, target_price, ai_output_json
+             FROM ai_decisions
+            WHERE UPPER(ticker)=? AND ts >= ?
+            ORDER BY ts DESC, id DESC
+            LIMIT 1""",
+        (ticker.upper(), cutoff),
+    )
+    return dict(row) if row else None
+
+
 def ai_decisions_for_alert(alert_id: int) -> list[dict[str, Any]]:
     """GPT grader rows from ai_decisions for one alert id."""
     rows = fetchall(
@@ -695,6 +767,8 @@ def ai_decisions_for_alert(alert_id: int) -> list[dict[str, Any]]:
         (int(alert_id),),
     )
     out: list[dict[str, Any]] = []
+    from .grader.ai_reasoning import explain_ai_decision
+
     for r in rows:
         item = dict(r)
         raw = item.pop("ai_output_json", None)
@@ -704,8 +778,223 @@ def ai_decisions_for_alert(alert_id: int) -> list[dict[str, Any]]:
                 item["ai_output"] = json.loads(str(raw))
             except Exception:
                 item["ai_output"] = None
+
+        ai_out = item.get("ai_output") or {}
+        item["reasoning"] = explain_ai_decision(ai_out)
         out.append(item)
     return out
+
+
+def movement_alerts_for_ticker_day(
+    ticker: str,
+    *,
+    since_ts: float,
+) -> list[dict[str, Any]]:
+    """Movement SCANNER rows for one ticker since the UK-day start timestamp."""
+    tk = (ticker or "").strip().upper().lstrip("$")
+    if not tk:
+        return []
+    rows = fetchall(
+        """SELECT id, ts, type, raw, parsed_json, news_class
+             FROM alerts
+            WHERE UPPER(ticker)=? AND ts >= ?
+              AND type IN ('SCANNER', 'SCANNER_EDIT', 'NEWS_TESTER')
+            ORDER BY ts ASC, id ASC""",
+        (tk, float(since_ts)),
+    )
+    out: list[dict[str, Any]] = []
+    prev_price: float | None = None
+    for seq, r in enumerate(rows, 1):
+        item = dict(r)
+        parsed: dict[str, Any] = {}
+        raw_parsed = item.pop("parsed_json", None)
+        if raw_parsed:
+            try:
+                parsed = json.loads(str(raw_parsed))
+            except Exception:
+                parsed = {}
+        if item.get("raw") and (
+            not parsed.get("label_detail")
+            or parsed.get("volume_1v") is None
+        ):
+            try:
+                from . import alert_parser
+
+                reparsed = alert_parser.parse(str(item.get("raw") or ""))
+                for key in (
+                    "label_detail",
+                    "label",
+                    "volume_1v",
+                    "reverse_split",
+                    "float",
+                    "market_cap",
+                    "rv",
+                    "pct",
+                    "price",
+                    "rank",
+                    "indicators",
+                    "tags",
+                    "news_headline",
+                ):
+                    if reparsed.get(key) is not None and parsed.get(key) is None:
+                        parsed[key] = reparsed.get(key)
+            except Exception:
+                pass
+        tags = parsed.get("tags") or []
+        indicators = list(parsed.get("indicators") or [])
+        for t in tags:
+            if t == "0Borrow" and "0 Borrow" not in indicators:
+                indicators.append("0 Borrow")
+            elif t == "RegSHO" and "Reg SHO" not in indicators:
+                indicators.append("Reg SHO")
+            elif t == "PotSqueeze" and "Potential Squeeze" not in indicators:
+                indicators.append("Potential Squeeze")
+            elif t == "KnownRunner" and "Known Runner" not in indicators:
+                indicators.append("Known Runner")
+        price = parsed.get("price")
+        pct_since_prior = None
+        if price is not None and prev_price is not None and prev_price > 0:
+            pct_since_prior = round((float(price) - prev_price) / prev_price * 100.0, 1)
+        if price is not None:
+            prev_price = float(price)
+        out.append(
+            {
+                "alert_id": int(item["id"]),
+                "ts": float(item["ts"]),
+                "type": item.get("type"),
+                "raw": item.get("raw"),
+                "news_class": item.get("news_class"),
+                "sequence": seq,
+                "rank": parsed.get("rank"),
+                "label": parsed.get("label"),
+                "label_detail": parsed.get("label_detail") or parsed.get("label"),
+                "price": price,
+                "pct": parsed.get("pct"),
+                "pct_since_prior": pct_since_prior,
+                "rv": parsed.get("rv"),
+                "float": parsed.get("float"),
+                "market_cap": parsed.get("market_cap"),
+                "volume_1v": parsed.get("volume_1v"),
+                "reverse_split": parsed.get("reverse_split"),
+                "tags": tags,
+                "indicators": indicators,
+                "news_headline": parsed.get("news_headline"),
+            }
+        )
+    return out
+
+
+def ai_decisions_for_ticker_day(
+    ticker: str,
+    *,
+    since_ts: float,
+) -> list[dict[str, Any]]:
+    """All GPT grader rows for one ticker since UK-day start, with plain reasoning."""
+    from .grader.ai_reasoning import explain_ai_decision
+
+    tk = (ticker or "").strip().upper().lstrip("$")
+    if not tk:
+        return []
+    rows = fetchall(
+        """SELECT id, ts, ticker, alert_number, alert_id, grade, action,
+                  entry_price, target_price, latency_ms, cost_gbp, ai_output_json
+             FROM ai_decisions
+            WHERE UPPER(ticker)=? AND ts >= ?
+            ORDER BY alert_number ASC, ts ASC, id ASC""",
+        (tk, float(since_ts)),
+    )
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        item = dict(r)
+        raw = item.pop("ai_output_json", None)
+        ai_output = None
+        if raw:
+            try:
+                ai_output = json.loads(str(raw))
+            except Exception:
+                ai_output = None
+        item["ai_output"] = ai_output
+        item["reasoning"] = explain_ai_decision(ai_output or {})
+        out.append(item)
+    return out
+
+
+def closed_trades_for_ticker_day(
+    ticker: str,
+    *,
+    since_ts: float,
+) -> list[dict[str, Any]]:
+    """Broker-closed trades for one display ticker since UK-day start."""
+    from . import ticker_identity
+
+    tk = ticker_identity.normalize_scanner(ticker)
+    if not tk:
+        return []
+    match_sql, match_params = ticker_identity.trades_ticker_where_clause(tk)
+    rows = fetchall(
+        f"""SELECT id, ticker, entry_price, exit_price, open_ts, exit_ts,
+                  pnl_pct, pnl_gbp, exit_reason, alert_id, status
+             FROM trades
+            WHERE status='CLOSED'
+              AND exit_ts >= ?
+              AND {match_sql}
+            ORDER BY exit_ts ASC, id ASC""",
+        (float(since_ts), *match_params),
+    )
+    return [dict(r) for r in rows]
+
+
+def last_closed_trade_for_ticker(
+    ticker: str,
+    *,
+    before_ts: float | None = None,
+) -> dict[str, Any] | None:
+    """Most recent CLOSED trade row for a scanner or broker ticker."""
+    from . import ticker_identity
+
+    tk = ticker_identity.normalize_scanner(ticker)
+    if not tk:
+        return None
+    match_sql, match_params = ticker_identity.trades_ticker_where_clause(tk)
+    if before_ts is not None:
+        row = fetchone(
+            f"""SELECT id, ticker, entry_price, exit_price, open_ts, exit_ts,
+                      pnl_pct, pnl_gbp, exit_reason, alert_id, status
+                 FROM trades
+                WHERE status='CLOSED'
+                  AND exit_ts <= ?
+                  AND {match_sql}
+                ORDER BY exit_ts DESC, id DESC
+                LIMIT 1""",
+            (float(before_ts), *match_params),
+        )
+    else:
+        row = fetchone(
+            f"""SELECT id, ticker, entry_price, exit_price, open_ts, exit_ts,
+                      pnl_pct, pnl_gbp, exit_reason, alert_id, status
+                 FROM trades
+                WHERE status='CLOSED'
+                  AND {match_sql}
+                ORDER BY exit_ts DESC, id DESC
+                LIMIT 1""",
+            match_params,
+        )
+    return dict(row) if row else None
+
+
+def prior_trade_snapshot(tr: dict[str, Any]) -> dict[str, Any]:
+    """Compact prior-trade blob stored on ticker_states for re-entry grading."""
+    return {
+        "trade_id": tr.get("id"),
+        "entry_price": tr.get("entry_price"),
+        "exit_price": tr.get("exit_price"),
+        "open_ts": tr.get("open_ts"),
+        "exit_ts": tr.get("exit_ts"),
+        "pnl_pct": tr.get("pnl_pct"),
+        "pnl_gbp": tr.get("pnl_gbp"),
+        "exit_reason": tr.get("exit_reason"),
+        "alert_id": tr.get("alert_id"),
+    }
 
 
 def block_offering(ticker: str) -> None:
@@ -880,6 +1169,62 @@ def _audit_load(raw: str | None) -> dict[str, Any]:
     except Exception:
         pass
     return {"events": []}
+
+
+_PRE_REVIEW_WATCH_EVENT_KINDS = frozenset({"accumulating", "disqualified"})
+
+
+def watch_history_counts_for_ai_history(
+    *,
+    reason: str | None,
+    episode_type: str | None,
+    alert_id: int | None,
+    audit_json: str | None,
+) -> bool:
+    """True when a watch_history row belongs in AI History (review stage+), not scanner-only."""
+    ep = (episode_type or "WATCH").upper()
+    if ep == "TRADE":
+        return True
+    r = str(reason or "")
+    if r != WATCH_ACTIVE_REASON:
+        return True
+    audit = _audit_load(audit_json)
+    events = audit.get("events") or []
+    if not events:
+        return False
+    kinds = {str(e.get("kind") or "") for e in events if isinstance(e, dict)}
+    if kinds and kinds <= _PRE_REVIEW_WATCH_EVENT_KINDS:
+        return False
+    if kinds & {"grader_monitor", "review", "hydrate_blacklist"}:
+        return True
+    if alert_id:
+        row = fetchone(
+            "SELECT 1 FROM ai_decisions WHERE alert_id=? LIMIT 1",
+            (int(alert_id),),
+        )
+        if row:
+            return True
+    return False
+
+
+def watch_history_purge_pre_review_live() -> int:
+    """Remove open watch episodes that never reached GPT review."""
+    rows = fetchall(
+        "SELECT id, reason, episode_type, alert_id, audit_json FROM watch_history "
+        "WHERE reason=?",
+        (WATCH_ACTIVE_REASON,),
+    )
+    n = 0
+    for r in rows:
+        if not watch_history_counts_for_ai_history(
+            reason=r["reason"],
+            episode_type=r["episode_type"],
+            alert_id=r["alert_id"],
+            audit_json=r["audit_json"],
+        ):
+            execute("DELETE FROM watch_history WHERE id=?", (int(r["id"]),))
+            n += 1
+    return n
 
 
 def watch_episode_ensure_open(
@@ -1375,6 +1720,19 @@ def trade_audit_finalize(
         exit_block["exit_price"] = tr.get("exit_price")
     base["exit"] = exit_block
     base["monitor_log"] = mon
+    try:
+        from .trade_analytics import compute_trade_analytics
+
+        ticks = trade_ticks_for_trade(int(trade_id))
+        exit_p = tr.get("pnl_pct") if trow else None
+        cap = tr.get("wallet_total_cost_gbp") if tr.get("wallet_total_cost_gbp") is not None else tr.get("capital_gbp")
+        base["trade_analytics"] = compute_trade_analytics(
+            ticks,
+            exit_pct=float(exit_p) if exit_p is not None else None,
+            capital_gbp=float(cap) if cap is not None else None,
+        )
+    except Exception:
+        _log.debug("trade_analytics finalize failed trade_id=%s", trade_id)
 
     fj = json.dumps(base, default=str)  # used for UPDATE audit_json payload
     fr = (exit_reason or "")[:500]
@@ -1396,6 +1754,12 @@ def trade_audit_finalize(
             ),
         )
         if cur.rowcount and cur.rowcount > 0:
+            try:
+                from ai_sandbox.grader import state as grader_state
+
+                grader_state.mark_traded_from_trade_id(int(trade_id), ts=float(exit_ts))
+            except Exception:
+                _log.debug("mark_traded_from_trade_id failed id=%s", trade_id)
             return
 
     if fetchone(
@@ -1430,6 +1794,88 @@ def trade_audit_finalize(
         episode_type="TRADE",
         audit=base,
     )
+    try:
+        from ai_sandbox.grader import state as grader_state
+
+        grader_state.mark_traded_from_trade_id(int(trade_id), ts=float(exit_ts))
+    except Exception:
+        _log.debug("mark_traded_from_trade_id failed id=%s", trade_id)
+
+
+def monitor_log_append(
+    trade_id: int,
+    *,
+    price: float | None,
+    unreal_pct: float | None,
+    decision: str | None,
+) -> None:
+    execute(
+        """INSERT INTO monitor_log(trade_id, ts, price, unreal_pct, ai_decision, raw_response)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            int(trade_id),
+            time.time(),
+            price,
+            unreal_pct,
+            decision,
+            None,
+        ),
+    )
+
+
+def trade_tick_append(
+    trade_id: int,
+    *,
+    open_ts: float,
+    price: float | None,
+    unreal_pct: float | None,
+    unreal_gbp: float | None = None,
+) -> None:
+    """Record one 1-second sample while a trade is open."""
+    now = time.time()
+    elapsed = max(0.0, now - float(open_ts)) if open_ts > 0 else 0.0
+    execute(
+        """INSERT INTO trade_ticks(trade_id, ts, elapsed_sec, price, unreal_pct, unreal_gbp)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            int(trade_id),
+            now,
+            round(elapsed, 3),
+            price,
+            unreal_pct,
+            unreal_gbp,
+        ),
+    )
+
+
+def trade_ticks_for_trade(trade_id: int, *, limit: int | None = None) -> list[dict[str, Any]]:
+    sql = (
+        "SELECT ts, elapsed_sec, price, unreal_pct, unreal_gbp FROM trade_ticks "
+        "WHERE trade_id=? ORDER BY ts ASC"
+    )
+    params: tuple[Any, ...] = (int(trade_id),)
+    if limit is not None and int(limit) > 0:
+        sql += " LIMIT ?"
+        params = (int(trade_id), int(limit))
+    return [dict(r) for r in fetchall(sql, params)]
+
+
+def trade_analytics_for_trade(trade_id: int, *, exit_pct: float | None = None) -> dict[str, Any]:
+    from .trade_analytics import compute_trade_analytics
+
+    ticks = trade_ticks_for_trade(int(trade_id))
+    row = fetchone(
+        "SELECT pnl_pct, status, capital_gbp FROM trades WHERE id=?",
+        (int(trade_id),),
+    )
+    capital_gbp: float | None = None
+    if row:
+        tr = dict(row)
+        if exit_pct is None and str(tr.get("status") or "").upper() == "CLOSED" and tr.get("pnl_pct") is not None:
+            exit_pct = float(tr["pnl_pct"])
+        if tr.get("capital_gbp") is not None:
+            capital_gbp = float(tr["capital_gbp"])
+    return compute_trade_analytics(ticks, exit_pct=exit_pct, capital_gbp=capital_gbp)
 
 
 def trade_audit_ensure_open_for_resume(trade_id: int) -> None:
@@ -1496,6 +1942,7 @@ def wipe_all_tables() -> None:
     quota tables. Resets AUTOINCREMENT rowid sequences for a clean id space.
     """
     _TABLES_CLEAR = (
+        "trade_ticks",
         "monitor_log",
         "trades",
         "scores",

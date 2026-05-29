@@ -2119,7 +2119,7 @@
 ════════════════════════════════════════════════════════════ -->
 <style>
   .ai-page { padding: 18px; display: flex; flex-direction: column; gap: 16px; max-width: 1700px; margin: 0 auto; }
-  .ai-strip { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 10px; }
+  .ai-strip { display: grid; grid-template-columns: repeat(8, minmax(0,1fr)); gap: 10px; }
   .ai-stat { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; min-width: 0; }
   .ai-stat-lbl { font-size: 10px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.6px; }
   .ai-stat-val { font-family: var(--mono); font-size: 18px; font-weight: 700; margin-top: 4px; color: var(--text); }
@@ -2154,12 +2154,29 @@
   .ai-slot-pnl.up { color: var(--green); }
   .ai-slot-pnl.down { color: var(--red); }
   .ai-slot-decision { font-size: 10px; color: var(--text3); font-family: var(--mono); margin-top: auto; padding-top: 4px; border-top: 1px solid var(--border); }
+  .ai-slot-analytics { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  .ai-slot-analytics-btn { width: 100%; background: var(--bg4); color: var(--text2); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; font-size: 10px; cursor: pointer; }
+  .ai-slot-analytics-btn:hover { color: var(--amber); border-color: var(--amber); }
 
   .ai-grid { display: block; }
   .ai-grid .ai-card { margin-bottom: 14px; }
   .ai-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; min-width: 0; }
 
-  .ai-feed-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .ai-feed-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+  .ai-feed-head-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  .ai-feed-day {
+    height: 28px;
+    padding: 0 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    max-width: 160px;
+  }
+  .ai-feed-day:focus { outline: none; border-color: var(--blue); }
   .ai-feed-search { position: relative; display: flex; align-items: center; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 0 8px; height: 28px; min-width: 220px; }
   .ai-feed-search:focus-within { border-color: var(--blue); }
   .ai-feed-search i.ti { color: var(--text3); font-size: 13px; }
@@ -2197,8 +2214,8 @@
   .ai-feed-cols {
     display: grid;
     grid-template-columns:
-      76px 24px 78px 44px 72px 54px 58px 52px 48px 54px 96px 112px;
-    gap: 6px 12px; align-items: center; padding: 6px 12px; min-width: 820px;
+      76px 24px 78px 44px 72px 54px 58px 52px 48px 54px 96px 40px 112px;
+    gap: 6px 12px; align-items: center; padding: 6px 12px; min-width: 860px;
   }
   .ai-feed-cols > * { justify-self: start; text-align: left; min-width: 0; }
   .ai-feed-colhead {
@@ -2215,6 +2232,7 @@
   .ai-feed-col.pct.down { color: var(--red); font-weight: 700; }
   .ai-feed-col.rv.hot { color: var(--amber); font-weight: 700; }
   .ai-feed-col.rv.cold { color: var(--text3); }
+  .ai-feed-alerts { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
 
   .ai-feed-row { border-radius: 6px; font-size: 11px; }
   .ai-feed-row:hover { background: var(--bg3); }
@@ -2257,6 +2275,20 @@
   .ai-feed-row.clickable:hover { background: var(--bg4); }
   .ai-feed-info { color: var(--text3); font-size: 11px; }
   .ai-feed-row.clickable:hover .ai-feed-info { color: var(--green); }
+  .ai-trade-info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .ai-trade-info-btn:hover { background: var(--bg4); }
+  .ai-trade-info-btn:hover .ai-feed-info { color: var(--green); }
   .ai-feed-row.event { opacity: 0.85; }
   .ai-feed-row.filtered { opacity: 0.55; }
   .ai-feed-row.filtered:hover { opacity: 1; }
@@ -2345,6 +2377,75 @@
   .ai-d-monitor { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
   .ai-d-monitor-row { display: grid; grid-template-columns: 60px 70px 70px 1fr; gap: 6px; font-family: var(--mono); font-size: 10px; padding: 4px 6px; border-radius: 4px; background: var(--bg3); }
   .ai-d-monitor-row .dec { color: var(--green); font-weight: 700; }
+  .ai-ta-panel-wrap { margin-top: 4px; }
+  .ai-ta-panel { display: flex; flex-direction: column; gap: 32px; }
+  .ai-ta-top { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+  @media (max-width: 720px) { .ai-ta-top { grid-template-columns: 1fr; gap: 24px; } }
+  .ai-ta-sec-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  }
+  .ai-ta-sec-title { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text2); }
+  .ai-ta-live-tag { font-size: 10px; font-family: var(--mono); color: var(--text3); }
+  .ai-ta-trade-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; align-items: center; }
+  .ai-ta-trade-k { font-size: 11px; color: var(--text2); text-transform: capitalize; }
+  .ai-ta-trade-v { font-size: 13px; font-family: var(--mono); color: var(--text); }
+  .ai-ta-trade-v.right { text-align: right; }
+  .ai-ta-approx { font-size: 10px; color: var(--text3); margin-top: 12px; }
+  .ai-ta-status-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+    background: var(--green-dim); color: var(--green); border: 1px solid rgba(16, 185, 129, 0.25);
+  }
+  .ai-ta-status-pill.pending { background: var(--amber-dim); color: var(--amber); border-color: rgba(245, 158, 11, 0.25); }
+  .ai-ta-status-pill.closed { background: var(--bg4); color: var(--text2); border-color: var(--border); }
+  .ai-ta-metrics { display: flex; flex-direction: column; gap: 6px; }
+  .ai-ta-metric-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .ai-ta-metric-k { font-size: 11px; color: var(--text2); flex-shrink: 0; }
+  .ai-ta-metric-k:hover { color: var(--text); }
+  .ai-ta-metric-v { font-size: 13px; font-family: var(--mono); text-align: right; white-space: nowrap; }
+  .ai-ta-metric-v.up { color: var(--green); }
+  .ai-ta-metric-v.down { color: var(--red); }
+  .ai-ta-metric-v.neutral { color: var(--text); }
+  .ai-ta-chart-box {
+    position: relative; height: 192px; background: rgba(15, 23, 42, 0.35);
+    border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.12); overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .ai-ta-chart-y-max, .ai-ta-chart-y-min {
+    position: absolute; left: 16px; font-size: 10px; font-family: var(--mono); color: var(--text3); z-index: 1;
+  }
+  .ai-ta-chart-y-max { top: 16px; }
+  .ai-ta-chart-y-min { bottom: 32px; }
+  .ai-ta-chart-svg-wrap { flex: 1; width: 100%; min-height: 0; }
+  .ai-ta-chart-svg { width: 100%; height: 100%; display: block; }
+  .ai-ta-chart-x {
+    display: flex; justify-content: space-between; padding: 0 18% 8px;
+    font-size: 10px; font-family: var(--mono); color: var(--text3);
+  }
+  .ai-ta-chart-foot {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 10px; font-family: var(--mono); color: var(--text3);
+  }
+  .ai-ta-live-dot { position: relative; display: inline-flex; width: 8px; height: 8px; }
+  .ai-ta-live-dot::before {
+    content: ''; position: absolute; inset: 0; border-radius: 50%;
+    background: var(--green); opacity: 0.75; animation: ai-ta-ping 1.5s cubic-bezier(0,0,0.2,1) infinite;
+  }
+  .ai-ta-live-dot::after { content: ''; position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  @keyframes ai-ta-ping { 75%, 100% { transform: scale(2); opacity: 0; } }
+  .ai-ta-log-wrap {
+    background: rgba(15, 23, 42, 0.25); border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.12); overflow: hidden;
+  }
+  .ai-ta-log-scroll { max-height: 192px; overflow-y: auto; font-family: var(--mono); font-size: 11px; }
+  .ai-ta-log-table { width: 100%; border-collapse: collapse; text-align: left; }
+  .ai-ta-log-table td { padding: 8px 16px; border-bottom: 1px solid rgba(148, 163, 184, 0.08); white-space: nowrap; }
+  .ai-ta-log-table tr:hover td { background: rgba(148, 163, 184, 0.06); }
+  .ai-ta-log-table tr.ai-ta-log-stripe td { background: rgba(15, 23, 42, 0.2); }
+  .ai-ta-log-table td.time { color: var(--text2); }
+  .ai-ta-log-table td.price { color: var(--text); }
+  .ai-ta-log-table td.up { color: var(--green); }
+  .ai-ta-log-table td.down { color: var(--red); }
+  .ai-ta-log-table td.dec { color: var(--green); opacity: 0.85; width: 100%; white-space: normal; }
 
   .ai-queue, .ai-trades { display: flex; flex-direction: column; gap: 6px; max-height: 520px; overflow-y: auto; }
   .ai-queue-row { display: grid; grid-template-columns: 50px 1fr 60px 70px 70px 70px 56px; gap: 8px; padding: 8px; border-radius: 6px; background: var(--bg3); font-size: 11px; font-family: var(--mono); align-items: center; }
@@ -2360,6 +2461,92 @@
   .ai-feed-tag.watch-news { background: var(--cyan-dim); color: var(--cyan); }
   .ai-watch-rev .dec.SKIP  { color: var(--text3); }
   .ai-watch-rev .reason { color: var(--text2); white-space: normal; line-height: 1.35; }
+  .ai-alert-hist-row {
+    display: grid; grid-template-columns: 36px 62px minmax(72px,1fr) 58px 52px 48px 1fr;
+    gap: 8px; padding: 8px 10px; background: var(--bg3); border-radius: 4px;
+    font-family: var(--mono); font-size: 10px; align-items: start;
+  }
+  .ai-alert-hist-row.is-current { border-left: 2px solid var(--blue); background: var(--bg2); }
+  .ai-alert-hist-row .ai-alert-hist-meta { color: var(--text3); white-space: nowrap; }
+  .ai-alert-hist-row .ai-alert-hist-label { color: var(--amber); font-weight: 700; }
+  .ai-alert-hist-row .ai-alert-hist-detail { color: var(--text2); white-space: normal; line-height: 1.35; word-break: break-word; }
+  .ai-drawer-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg3);
+  }
+  .ai-drawer-table { display: flex; flex-direction: column; gap: 1px; min-width: 980px; }
+  .ai-drawer-table-head,
+  .ai-drawer-table-row {
+    display: grid;
+    gap: 6px 8px;
+    padding: 7px 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    align-items: start;
+  }
+  .ai-drawer-table-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg4);
+    color: var(--text2);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ai-drawer-table-row { background: var(--bg3); }
+  .ai-drawer-table-row:nth-child(even) { background: rgba(255,255,255,0.015); }
+  .ai-drawer-table-row.is-current { border-left: 2px solid var(--blue); background: var(--bg2); }
+  .ai-drawer-table-row .muted { color: var(--text3); white-space: nowrap; }
+  .ai-drawer-table-row .label { color: var(--amber); font-weight: 700; line-height: 1.3; }
+  .ai-drawer-table-row .pct.up { color: var(--green); font-weight: 700; }
+  .ai-drawer-table-row .pct.down { color: var(--red); font-weight: 700; }
+  .ai-drawer-table-row .ind { color: var(--text2); line-height: 1.35; word-break: break-word; }
+  .ai-drawer-table-row .news { color: var(--cyan); line-height: 1.35; word-break: break-word; }
+  .ai-alert-table-head,
+  .ai-alert-table-row {
+    grid-template-columns:
+      30px 58px minmax(92px,1.1fr) 54px 48px 48px 44px 44px 38px minmax(108px,1fr) minmax(120px,1.2fr);
+  }
+  .ai-review-table-head,
+  .ai-review-table-row {
+    grid-template-columns:
+      minmax(118px,1.35fr) 58px 54px 52px minmax(108px,128px) minmax(220px,2.2fr);
+  }
+  .ai-review-table-row .review-label {
+    color: var(--text2);
+    line-height: 1.35;
+    white-space: normal;
+    word-break: break-word;
+  }
+  .ai-review-table-row .review-label .reentry-tag {
+    color: var(--amber);
+    font-weight: 700;
+  }
+  .ai-review-table-row .outcome {
+    font-weight: 700;
+    line-height: 1.35;
+    white-space: normal;
+  }
+  .ai-review-table-row .outcome.trade { color: var(--green); }
+  .ai-review-table-row .outcome.watch { color: var(--amber); }
+  .ai-review-table-row .outcome.skip { color: var(--text3); }
+  .ai-review-table-row .reason {
+    color: var(--text2);
+    line-height: 1.45;
+    white-space: normal;
+    word-break: break-word;
+  }
+  .ai-drawer-details summary {
+    cursor: pointer;
+    color: var(--text2);
+    font-size: 10px;
+    user-select: none;
+  }
   .ai-watch-flags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
   .ai-watch-flag { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: var(--red-dim); color: var(--red); }
   .ai-watch-hist { display: flex; flex-direction: column; gap: 4px; max-height: 520px; overflow-y: auto; }
@@ -2436,9 +2623,14 @@
       max-height: calc(92dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
       border-radius: 10px;
     }
-    .ai-feed-head {
-      flex-direction: column;
-      align-items: stretch;
+    .ai-feed-head-left {
+      width: 100%;
+      justify-content: space-between;
+    }
+    .ai-feed-day {
+      max-width: none;
+      flex: 1;
+      min-width: 120px;
     }
     .ai-feed-search {
       min-width: 0;
@@ -2693,8 +2885,9 @@
       <div class="ai-stat"><div class="ai-stat-lbl">T212 Env</div><div class="ai-stat-val" id="ai-stat-env">—</div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Account Value</div><div class="ai-stat-val" id="ai-stat-cash">—</div><div class="ai-stat-sub" id="ai-stat-cash-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Today P&amp;L</div><div class="ai-stat-val" id="ai-stat-pnl">—</div></div>
+      <div class="ai-stat"><div class="ai-stat-lbl">Lifetime P&amp;L</div><div class="ai-stat-val" id="ai-stat-lifetime-pnl">—</div><div class="ai-stat-sub" id="ai-stat-lifetime-pnl-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Open / Closed / Rejected</div><div class="ai-stat-val" id="ai-stat-counts">—</div><div class="ai-stat-sub" id="ai-stat-blocked-sub"></div></div>
-      <div class="ai-stat"><div class="ai-stat-lbl">GPT Cost (today)</div><div class="ai-stat-val" id="ai-stat-ai-cost">—</div><div class="ai-stat-sub" id="ai-stat-ai-cost-sub"></div></div>
+      <div class="ai-stat"><div class="ai-stat-lbl">AI Cost (today)</div><div class="ai-stat-val" id="ai-stat-ai-cost">—</div><div class="ai-stat-sub" id="ai-stat-ai-cost-sub"></div></div>
       <div class="ai-stat"><div class="ai-stat-lbl">Scanner / Scored</div><div class="ai-stat-val" id="ai-stat-scan">—</div></div>
     </div>
 
@@ -2709,7 +2902,12 @@
     <div class="ai-grid">
       <div class="ai-card">
         <div class="ai-feed-head">
-          <div class="ai-section-title" style="margin:0;">Scanner Feed (live)</div>
+          <div class="ai-feed-head-left">
+            <div class="ai-section-title" style="margin:0;">Scanner Feed</div>
+            <select id="ai-feed-day" class="ai-feed-day" title="Filter feed by UK calendar day" aria-label="Scanner feed day filter">
+              <option value="today">Today</option>
+            </select>
+          </div>
           <div class="ai-feed-search">
             <i class="ti ti-search"></i>
             <input type="text" id="ai-feed-search" list="ai-feed-tickers"
@@ -3381,6 +3579,18 @@ const _aiFmtMoney = (n) => (n == null || isNaN(Number(n))) ? '—'
 const _aiFmtPct = (n) => (n == null || isNaN(Number(n))) ? '—' : (Number(n) >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
 const _aiFmtPrice = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).toFixed(4);
 
+function _aiDisplayTicker(ticker, displayTicker) {
+  if (displayTicker != null && String(displayTicker).trim()) {
+    return String(displayTicker).trim().toUpperCase();
+  }
+  const raw = String(ticker || '').trim().toUpperCase();
+  if (!raw) return '—';
+  if (raw === 'SGBX' || raw === 'SGBX_US_EQ') return 'OLOX';
+  const head = raw.replace(/_US_EQ$/i, '').trim();
+  if (head === 'SGBX') return 'OLOX';
+  return head || raw;
+}
+
 function renderAITradePage() {
   if (_aiPollTimer) clearInterval(_aiPollTimer);
   _aiTick();
@@ -3428,7 +3638,7 @@ async function _aiTick() {
     const [s, sl, fd, tr, wh] = await Promise.all([
       fetch('/api/ai/status').then(r => r.json()),
       fetch('/api/ai/slots').then(r => r.json()),
-      fetch('/api/ai/feed?limit=80').then(r => r.json()),
+      _aiFetchFeed(80),
       fetch('/api/ai/trades?limit=80').then(r => r.json()),
       _aiFetchAiHistoryList(80),
     ]);
@@ -3497,6 +3707,36 @@ function _aiRenderStatus(s) {
     pnlEl.title = '';
   }
   pnlEl.className = 'ai-stat-val ' + (pnl > 0 ? 'up' : pnl < 0 ? 'down' : '');
+  const lifetimePnl = Number(s.lifetime_pnl_gbp || 0);
+  const lifetimeEl = $('ai-stat-lifetime-pnl');
+  if (lifetimeEl) {
+    lifetimeEl.textContent = _aiFmtMoney(lifetimePnl);
+    const lRlz = s.lifetime_pnl_realized_gbp;
+    const lOu = s.lifetime_pnl_open_unreal_gbp;
+    const closedAll = s.closed_lifetime;
+    if (
+      lRlz != null &&
+      lOu != null &&
+      !Number.isNaN(Number(lRlz)) &&
+      !Number.isNaN(Number(lOu))
+    ) {
+      lifetimeEl.title =
+        'All closed trades: ' +
+        _aiFmtMoney(lRlz) +
+        ' · open unrealized ' +
+        _aiFmtMoney(lOu) +
+        (closedAll != null ? ' · ' + closedAll + ' closed' : '');
+    } else {
+      lifetimeEl.title = '';
+    }
+    lifetimeEl.className = 'ai-stat-val ' + (lifetimePnl > 0 ? 'up' : lifetimePnl < 0 ? 'down' : '');
+  }
+  const lifetimeSub = $('ai-stat-lifetime-pnl-sub');
+  if (lifetimeSub) {
+    const lRlz = Number(s.lifetime_pnl_realized_gbp || 0);
+    const closedAll = Number(s.closed_lifetime || 0);
+    lifetimeSub.textContent = closedAll ? `${closedAll} closed · rlz ${_aiFmtMoney(lRlz)}` : 'No closed trades yet';
+  }
   const cashUi = _aiFmtAccountCash(s.cash);
   const cashEl = $('ai-stat-cash');
   if (cashEl) {
@@ -3513,22 +3753,302 @@ function _aiRenderStatus(s) {
   const aiUse = s.ai_usage || s.gemini_usage || {};
   const costToday = Number(aiUse.usage_gbp_today != null ? aiUse.usage_gbp_today : 0);
   const costTotal = Number(aiUse.usage_gbp_total != null ? aiUse.usage_gbp_total : 0);
+  const gemToday   = aiUse.gemini_gbp_today   != null ? Number(aiUse.gemini_gbp_today)   : null;
+  const oaToday    = aiUse.openai_gbp_today   != null ? Number(aiUse.openai_gbp_today)   : null;
+  const gemCalls   = aiUse.gemini_calls_today != null ? Number(aiUse.gemini_calls_today) : null;
+  const oaCalls    = aiUse.openai_calls_today != null ? Number(aiUse.openai_calls_today) : null;
   const costEl = $('ai-stat-ai-cost');
   if (costEl) {
-    costEl.textContent = '£' + costToday.toFixed(2);
-    costEl.title = 'OpenAI + Gemini estimated API cost (UK day)';
+    costEl.textContent = '£' + costToday.toFixed(4);
+    const totalCalls = (aiUse.usage_calls_today || 0);
+    costEl.title = 'Gemini + OpenAI combined API cost (today) — ' + totalCalls + ' calls';
   }
   const costSub = $('ai-stat-ai-cost-sub');
   if (costSub) {
-    const oa = aiUse.openai_gbp_today != null ? Number(aiUse.openai_gbp_today) : null;
-    let subTxt = 'All time £' + costTotal.toFixed(2);
-    if (oa != null && !Number.isNaN(oa)) subTxt += ' · today £' + oa.toFixed(2);
-    costSub.textContent = subTxt;
+    const parts = [];
+    if (gemToday != null && !Number.isNaN(gemToday)) {
+      let p = 'Gemini £' + gemToday.toFixed(4);
+      if (gemCalls != null) p += ' (' + gemCalls + ')';
+      parts.push(p);
+    }
+    if (oaToday != null && !Number.isNaN(oaToday)) {
+      let p = 'OpenAI £' + oaToday.toFixed(4);
+      if (oaCalls != null) p += ' (' + oaCalls + ')';
+      parts.push(p);
+    }
+    const breakdown = parts.length ? parts.join(' · ') : '';
+    const allTime = 'All time £' + costTotal.toFixed(2);
+    costSub.textContent = breakdown ? breakdown + ' · ' + allTime : allTime;
   }
   const toggle = $('ai-trading-toggle');
   if (toggle) {
     toggle.classList.toggle('on', !!eng.enabled);
     toggle.textContent = eng.enabled ? 'Trading ON' : 'Trading OFF';
+  }
+}
+
+function _aiStartTradeAnalyticsPoll(tradeId, { live } = {}) {
+  if (window._aiTradeAnalyticsPoll) {
+    clearInterval(window._aiTradeAnalyticsPoll);
+    window._aiTradeAnalyticsPoll = null;
+  }
+  if (!tradeId || !live) return;
+  window._aiTradeAnalyticsPoll = setInterval(async () => {
+    const dr = $('ai-drawer');
+    if (!dr || !dr.classList.contains('show')) {
+      clearInterval(window._aiTradeAnalyticsPoll);
+      window._aiTradeAnalyticsPoll = null;
+      return;
+    }
+    try {
+      const ar = await fetch('/api/ai/trade/' + tradeId + '/analytics').then((x) => x.json());
+      if (!ar.ok) return;
+      const root = document.getElementById('ai-trade-analytics-root');
+      if (root) {
+        root.innerHTML = _aiRenderTradeAnalyticsPanel(ar.analytics, ar.trade, ar.monitor, { live: true, bodyOnly: true });
+      }
+    } catch (_) { /* noop */ }
+  }, 2000);
+}
+
+function _aiFmtClockHm(ts) {
+  if (!ts) return '—';
+  const d = new Date(Number(ts) * 1000);
+  return `${d.getHours()}h ${String(d.getMinutes()).padStart(2, '0')}m`;
+}
+
+function _aiFmtElapsedSec(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm ? `${h}h ${rm}m` : `${h}h`;
+}
+
+function _aiTradePanelFromRow(tr) {
+  if (!tr) return null;
+  const disp = _aiDisplayTicker(tr.ticker, tr.display_ticker);
+  const dep = tr.wallet_total_cost_gbp != null ? Number(tr.wallet_total_cost_gbp) : Number(tr.capital_gbp || 0);
+  return {
+    ticker: disp,
+    instrument: disp,
+    slot: tr.slot != null ? String(tr.slot) : '—',
+    status: tr.status || '—',
+    deployed: dep > 0 ? _aiFmtMoney(dep) : '—',
+    entry: tr.entry_price != null && !Number.isNaN(Number(tr.entry_price)) ? Number(tr.entry_price).toFixed(2) : '—',
+  };
+}
+
+function _aiRenderTradeStatusPill(status) {
+  const st = String(status || '').toUpperCase();
+  let cls = 'ai-ta-status-pill';
+  if (st === 'SELL_PENDING') cls += ' pending';
+  else if (st === 'CLOSED' || st === 'REJECTED') cls += ' closed';
+  return `<span class="${cls}">${escapeHtml(st || '—')}</span>`;
+}
+
+function _aiRenderTradeChart(series) {
+  if (!series || !series.length) {
+    return '<div class="ai-ta-chart-box" style="align-items:center;justify-content:center;color:var(--text3);font-size:11px;">No tick data yet</div>';
+  }
+  const w = 1000;
+  const h = 160;
+  const pad = 20;
+  const vals = series.map((pt) => Number(pt.p));
+  let min = Math.min(...vals);
+  let max = Math.max(...vals);
+  if (min === max) { min -= 1; max += 1; }
+  const range = max - min;
+  const getY = (val) => h - pad - ((val - min) / range) * (h - 2 * pad);
+  const getX = (idx) => pad + (idx / Math.max(series.length - 1, 1)) * (w - 2 * pad);
+  let pathD = `M ${getX(0)},${getY(vals[0])}`;
+  for (let i = 1; i < vals.length; i++) {
+    pathD += ` H ${getX(i)} V ${getY(vals[i])}`;
+  }
+  const zeroY = getY(0);
+  const last = vals[vals.length - 1];
+  const stroke = last >= 0 ? '#10b981' : '#f43f5e';
+  const gradId = 'aiTaChartGrad';
+  const midIdx = Math.floor((series.length - 1) / 2);
+  const ts0 = series[0].ts;
+  const tsMid = series[midIdx].ts;
+  const tsEnd = series[series.length - 1].ts;
+  const xLabels = [
+    ts0 ? _aiFmtClockHm(ts0) : _aiFmtElapsedSec(series[0].t),
+    tsMid ? _aiFmtClockHm(tsMid) : _aiFmtElapsedSec(series[midIdx].t),
+    tsEnd ? _aiFmtClockHm(tsEnd) : _aiFmtElapsedSec(series[series.length - 1].t),
+  ];
+  return `
+    <div class="ai-ta-chart-box">
+      <div class="ai-ta-chart-y-max">${_aiFmtPctSigned(max, 1)}</div>
+      <div class="ai-ta-chart-y-min">${_aiFmtPctSigned(min, 1)}</div>
+      <div class="ai-ta-chart-svg-wrap">
+        <svg class="ai-ta-chart-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Trade path chart">
+          <line x1="${pad}" y1="${zeroY}" x2="${w - pad}" y2="${zeroY}" stroke="#334155" stroke-width="1" stroke-dasharray="4 4"/>
+          <path d="${pathD} V ${h} H ${pad} Z" fill="url(#${gradId})" opacity="0.12"/>
+          <path d="${pathD}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="${stroke}" stop-opacity="1"/>
+              <stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="ai-ta-chart-x">
+        <span>${xLabels[0]}</span>
+        <span>${xLabels[1]}</span>
+        <span>${xLabels[2]}</span>
+      </div>
+    </div>`;
+}
+
+function _aiRenderMonitorLogTable(monitor, analytics) {
+  const rows = Array.isArray(monitor) ? monitor : [];
+  const total = rows.length || (analytics && analytics.tick_count) || 0;
+  const tail = rows.slice(-40);
+  if (!tail.length) {
+    return `
+      <section>
+        <div class="ai-ta-sec-head">
+          <h2 class="ai-ta-sec-title">Monitor decisions</h2>
+          <span class="ai-ta-live-tag">(0)</span>
+        </div>
+        <div class="ai-ta-log-wrap"><div style="padding:12px 16px;color:var(--text3);font-size:11px;">No monitor snapshots yet</div></div>
+      </section>`;
+  }
+  const tbody = tail.map((row, idx) => {
+    const t = row.ts ? new Date(Number(row.ts) * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
+    const pct = row.unreal_pct;
+    const pnlStr = pct == null ? '—' : _aiFmtPctSigned(pct);
+    const pnlCls = pct == null ? '' : (Number(pct) >= 0 ? 'up' : 'down');
+    const details = escapeHtml(String(row.ai_decision || row.raw_response || ''));
+    const stripe = idx % 2 === 1 ? ' ai-ta-log-stripe' : '';
+    return `<tr class="${stripe}"><td class="time">${t}</td><td class="price">${_aiFmtPrice(row.price)}</td><td class="${pnlCls}">${pnlStr}</td><td class="dec">${details}</td></tr>`;
+  }).join('');
+  return `
+    <section>
+      <div class="ai-ta-sec-head">
+        <h2 class="ai-ta-sec-title">Monitor decisions</h2>
+        <span class="ai-ta-live-tag">(${Number(total).toLocaleString()})</span>
+      </div>
+      <div class="ai-ta-log-wrap">
+        <div class="ai-ta-log-scroll">
+          <table class="ai-ta-log-table"><tbody>${tbody}</tbody></table>
+        </div>
+      </div>
+    </section>`;
+}
+
+function _aiRenderTradeAnalyticsPanel(analytics, trade, monitor, { live, bodyOnly } = {}) {
+  if (!analytics || !analytics.sample_count) {
+    const empty = `<div class="ai-d-card" style="color:var(--text2);font-size:11px;">Collecting 1-second ticks while position is open…</div>`;
+    if (bodyOnly) return empty;
+    return `<div class="ai-d-section ai-ta-panel-wrap" id="ai-trade-analytics-root">${empty}</div>`;
+  }
+  const a = analytics;
+  const meta = _aiTradePanelFromRow(trade) || {};
+  const fmtSec = (s) => (s == null || Number.isNaN(Number(s))) ? '—' : `${Math.round(Number(s))}s`;
+  const fmtPeak = (pct, sec, gbp) => {
+    const base = `${_aiFmtPctSigned(pct)} @ ${fmtSec(sec)}`;
+    if (gbp == null || Number.isNaN(Number(gbp))) return base;
+    return `${base} — ${_aiFmtMoney(gbp)}`;
+  };
+  const mc = (v, force) => {
+    if (force === 'up') return 'up';
+    if (force === 'down') return 'down';
+    if (v == null || Number.isNaN(Number(v))) return 'neutral';
+    return Number(v) >= 0 ? 'up' : 'down';
+  };
+  const metric = (label, value, color) =>
+    `<div class="ai-ta-metric-row"><span class="ai-ta-metric-k">${label}</span><span class="ai-ta-metric-v ${color}">${value}</span></div>`;
+  const metrics = [
+    metric('Max gain', fmtPeak(a.max_gain_pct, a.max_gain_sec, a.max_gain_gbp), mc(a.max_gain_pct)),
+    metric('Max loss', fmtPeak(a.max_loss_pct, a.max_loss_sec, a.max_loss_gbp), mc(a.max_loss_pct, 'down')),
+    metric('Average', _aiFmtPctSigned(a.average_pct), mc(a.average_pct)),
+    metric('Duration', fmtSec(a.duration_sec), 'neutral'),
+    metric('Time in profit', a.time_in_profit_pct == null ? '—' : `${Number(a.time_in_profit_pct).toFixed(1)}%`, 'up'),
+    metric('Time underwater', a.time_underwater_pct == null ? '—' : `${Number(a.time_underwater_pct).toFixed(1)}%`, 'down'),
+    metric('Peak giveback', a.max_drawdown_from_peak_pct == null ? '—' : _aiFmtPctSigned(a.max_drawdown_from_peak_pct), 'down'),
+    metric('Exit efficiency', a.exit_efficiency_pct == null ? '—' : `${Number(a.exit_efficiency_pct).toFixed(1)}% of max`, mc(a.exit_efficiency_pct)),
+    metric('Volatility (σ)', a.volatility_pct == null ? '—' : _aiFmtPctSigned(a.volatility_pct), 'neutral'),
+    metric('Range (H−L)', a.range_pct == null ? '—' : _aiFmtPctSigned(a.range_pct), 'neutral'),
+    metric('First green', fmtSec(a.time_to_first_green_sec), 'up'),
+    metric('First red', fmtSec(a.time_to_first_red_sec), 'down'),
+  ].join('');
+  const liveFoot = live
+    ? `<span class="ai-ta-live-dot" aria-hidden="true"></span><span>updating live</span>`
+    : '';
+  const body = `
+    <div class="ai-ta-panel">
+      <div class="ai-ta-top">
+        <section>
+          <div class="ai-ta-sec-head"><h2 class="ai-ta-sec-title">Trade</h2></div>
+          <div class="ai-ta-trade-grid">
+            <div class="ai-ta-trade-k">ticker</div><div class="ai-ta-trade-v">${escapeHtml(meta.ticker || '—')}</div>
+            <div class="ai-ta-trade-k">slot</div><div class="ai-ta-trade-v">${escapeHtml(meta.slot || '—')}</div>
+            <div class="ai-ta-trade-k">status</div><div class="ai-ta-trade-v">${_aiRenderTradeStatusPill(meta.status)}</div>
+            <div class="ai-ta-trade-k">deployed</div><div class="ai-ta-trade-v">${escapeHtml(meta.deployed || '—')}</div>
+            <div class="ai-ta-trade-k">entry</div><div class="ai-ta-trade-v">${escapeHtml(meta.entry || '—')}</div>
+          </div>
+          <div class="ai-ta-approx">(approx)</div>
+        </section>
+        <section>
+          <div class="ai-ta-sec-head">
+            <h2 class="ai-ta-sec-title">Trade path analytics</h2>
+            ${live ? '<span class="ai-ta-live-tag">(LIVE)</span>' : ''}
+          </div>
+          <div class="ai-ta-metrics">${metrics}</div>
+        </section>
+      </div>
+      <section>
+        ${_aiRenderTradeChart(a.series)}
+        <div class="ai-ta-chart-foot">
+          <span>${Number(a.sample_count || 0).toLocaleString()} samples</span>
+          <span>•</span>
+          <span>1s cadence</span>
+          ${live ? '<span>•</span>' : ''}
+          ${liveFoot}
+        </div>
+      </section>
+      ${_aiRenderMonitorLogTable(monitor, a)}
+    </div>`;
+  if (bodyOnly) return body;
+  return `<div class="ai-d-section ai-ta-panel-wrap" id="ai-trade-analytics-root">${body}</div>`;
+}
+
+function _aiRenderTradeAnalyticsBlock(analytics, trade, monitor, { live } = {}) {
+  return _aiRenderTradeAnalyticsPanel(analytics, trade, monitor, { live });
+}
+
+async function _aiOpenTradeAnalyticsDrawer(tradeId) {
+  if (!tradeId) return;
+  const dr = $('ai-drawer'); const bd = $('ai-drawer-backdrop');
+  dr.classList.add('show'); bd.classList.add('show');
+  const body = $('ai-drawer-body');
+  body.innerHTML = '<div style="color:var(--text3);font-size:11px;">Loading…</div>';
+  if (!dr._wired) {
+    dr._wired = true;
+    $('ai-drawer-close').addEventListener('click', _aiCloseDrawer);
+    bd.addEventListener('click', _aiCloseDrawer);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _aiCloseDrawer(); });
+  }
+  try {
+    const ar = await fetch('/api/ai/trade/' + tradeId + '/analytics').then((x) => x.json());
+    if (!ar.ok) throw new Error(ar.error || 'fail');
+    const meta = _aiTradePanelFromRow(ar.trade);
+    $('ai-drawer-title').textContent = meta ? `${meta.ticker} · trade analytics` : `Trade #${tradeId} · analytics`;
+    body.innerHTML = _aiRenderTradeAnalyticsPanel(ar.analytics, ar.trade, ar.monitor, {
+      live: String(ar.status || '').toUpperCase() === 'OPEN',
+    });
+    if (String(ar.status || '').toUpperCase() === 'OPEN') {
+      _aiStartTradeAnalyticsPoll(tradeId, { live: true });
+    }
+  } catch (e) {
+    body.innerHTML = `<div style="color:var(--red);font-size:11px;">${e.message}</div>`;
   }
 }
 
@@ -3561,13 +4081,18 @@ function _aiRenderSlots(sl) {
       : String(s.state || 'OPEN').toUpperCase() === 'SELL_PENDING'
         ? 'SELL PENDING'
         : (s.state || 'OPEN');
+    const slotClickable = s.trade_id && String(s.state || '').toUpperCase() === 'ACTIVE';
+    const analyticsBlock = slotClickable ? `
+        <div class="ai-slot-analytics">
+          <button type="button" class="ai-slot-analytics-btn" data-trade-id="${s.trade_id}" data-hist-id="${s.watch_hist_id || ''}">View analytics</button>
+        </div>` : '';
     return `
       <div class="ai-slot ${state}">
         <div class="ai-slot-head">
           <span class="ai-slot-idx">SLOT ${s.index + 1}</span>
           <span class="ai-slot-state">${stateLbl}</span>
         </div>
-        <div class="ai-slot-ticker">${escapeHtml(s.display_ticker || s.ticker || '—')}</div>
+        <div class="ai-slot-ticker">${escapeHtml(_aiDisplayTicker(s.ticker, s.display_ticker))}</div>
         <div class="ai-slot-row"><span>Entry (USD)</span><b>${_aiFmtPrice(s.entry)}</b></div>
         <div class="ai-slot-row"><span>TP / Stop (USD)</span><b>${_aiFmtPrice(s.tp)} / ${_aiFmtPrice(s.stop)}</b></div>
         ${deployedRow}
@@ -3578,13 +4103,53 @@ function _aiRenderSlots(sl) {
           ${gbpLine}
         </div>
         <div class="ai-slot-decision">${s.last_decision || (s.state === 'OPEN' ? 'awaiting alert' : '')}</div>
+        ${analyticsBlock}
       </div>
     `;
   }).join('');
+  root.querySelectorAll('.ai-slot-analytics-btn').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const histId = parseInt(el.dataset.histId, 10);
+      const tradeId = parseInt(el.dataset.tradeId, 10);
+      if (histId > 0) _aiOpenWatchHistoryDrawer(histId);
+      else if (tradeId > 0) _aiOpenTradeAnalyticsDrawer(tradeId);
+    });
+  });
 }
 
 let _aiFeedFilter = '';
 let _aiFeedItems = [];
+let _aiFeedDay = localStorage.getItem('aiFeedDay') || 'today';
+
+function _aiFeedDayQuery() {
+  return 'day=' + encodeURIComponent(_aiFeedDay || 'today');
+}
+
+async function _aiFetchFeed(limit) {
+  const r = await fetch('/api/ai/feed?limit=' + encodeURIComponent(limit || 80) + '&' + _aiFeedDayQuery());
+  if (!r.ok) throw new Error('feed ' + r.status);
+  return r.json();
+}
+
+function _aiSyncFeedDaySelect(fd) {
+  const sel = $('ai-feed-day');
+  if (!sel) return;
+  const opts = (fd && fd.day_options) || [];
+  const current = (fd && fd.day) || _aiFeedDay || 'today';
+  _aiFeedDay = current;
+  try { localStorage.setItem('aiFeedDay', _aiFeedDay); } catch (_) {}
+  if (opts.length) {
+    const prev = sel.value;
+    sel.innerHTML = opts.map((o) =>
+      `<option value="${String(o.value).replace(/"/g, '&quot;')}">${String(o.label).replace(/</g, '&lt;')}</option>`
+    ).join('');
+    if (opts.some((o) => o.value === _aiFeedDay)) sel.value = _aiFeedDay;
+    else if (opts.some((o) => o.value === prev)) sel.value = prev;
+    else sel.value = 'today';
+    _aiFeedDay = sel.value;
+  }
+}
 
 function _aiFmtCompact(n) {
   if (n == null || isNaN(n)) return '';
@@ -3624,15 +4189,18 @@ function _aiHumanReason(code) {
     ai_pass: 'AI Pass',
     disqualified: 'Disqualified',
     ai_parse_failed: 'AI response parse failed',
-    alert_1_accumulating: 'Alert 1 — accumulating (GPT grades at alert 3)',
-    alert_2_accumulating: 'Alert 2 — accumulating (GPT grades at alert 3)',
-    alert_2_early_promotion: 'Alert 2 — early promotion, sent to GPT',
+    alert_1_accumulating: 'Alert 1 — accumulating (GPT grades at alert 2)',
+    alert_2_accumulating: 'Alert 2 — waiting for MOMENTUM/BREAKOUT + rising price',
+    alert_2_standard: 'Alert 2 — sent to GPT grader',
+    no_momentum_label_at_2: 'Deferred — alert 2 needs MOMENTUM or BREAKOUT label',
+    price_not_higher_than_alert_1: 'Deferred — price not above alert 1',
     alert_3_standard: 'Alert 3 — sent to GPT grader',
     continuation_watch: 'Continuation watch — sent to GPT',
     not_ready: 'Waiting for more scanner alerts before GPT',
     no_momentum_label_at_3: 'Deferred — no MOMENTUM/BREAKOUT label at alert 3',
     price_not_higher_than_alert_2: 'Deferred — price not above alert 2',
     negative_news: 'Skipped — negative news headline',
+    not_on_t212: 'Filtered — not on Trading 212',
     news_tester_force: 'News tester — forced GPT grade',
   };
   const k = String(code);
@@ -3646,13 +4214,14 @@ function _aiHumanReason(code) {
 const _AI_FEED_COLHEAD = `
   <div class="ai-feed-colhead ai-feed-cols">
     <span>Time</span><span></span><span>Type</span><span>#</span><span>Ticker</span>
-    <span>%</span><span>$</span><span>RV</span><span>FT</span><span>MC</span><span>Tags</span><span>Status</span>
+    <span>%</span><span>$</span><span>RV</span><span>FT</span><span>MC</span><span>Tags</span><span>Alerts</span><span>Status</span>
   </div>
 `;
 
 function _aiFeedIsActive(m) {
   const label = m.active_label || '';
   const st = m.grader_state || '';
+  if (label === 'TRADED' || st === 'TRADED' || m.decision === 'CLOSED') return false;
   if (['NEW', 'WATCHING', 'REVIEW', 'REVIEW WATCH'].includes(label)) return true;
   if (['NEW', 'WATCHING', 'PENDING_AI', 'WATCH'].includes(st)) return true;
   return false;
@@ -3661,6 +4230,7 @@ function _aiFeedIsActive(m) {
 function _aiFeedBucket(m) {
   const label = m.active_label || '';
   const st = m.grader_state || '';
+  if (label === 'TRADED' || st === 'TRADED' || m.decision === 'CLOSED') return 'filtered';
   if (m.decision === 'TRADE' || label === 'TRADE' || st === 'TRADE') return 'trade';
   if (_aiFeedIsActive(m)) return 'active';
   if (label === 'FILTERED' || st === 'PASS' || st === 'DISQUALIFIED') return 'filtered';
@@ -3678,12 +4248,14 @@ function _aiFeedRow(m) {
   const type = m.type || 'UNKNOWN';
   const p = m.parsed || {};
   const label = m.active_label || '';
-  const isTrade = m.decision === 'TRADE' || label === 'TRADE' || m.grader_state === 'TRADE';
+  const isTraded = label === 'TRADED' || m.grader_state === 'TRADED' || m.decision === 'CLOSED';
+  const isTrade = !isTraded && (m.decision === 'TRADE' || label === 'TRADE' || m.grader_state === 'TRADE');
   const isFiltered = _aiFeedIsFiltered(m);
 
   let tag = label || '';
   let cls = 'skip';
-  if (isTrade) { tag = tag || 'TRADE'; cls = 'trade'; }
+  if (isTraded) { tag = 'TRADED'; cls = 'trade-closed'; }
+  else if (isTrade) { tag = tag || 'TRADE'; cls = 'trade'; }
   else if (tag === 'REVIEW WATCH' || m.decision === 'WATCH') { tag = tag || 'REVIEW WATCH'; cls = 'watch'; }
   else if (tag === 'REVIEW') { cls = 'watch'; }
   else if (tag === 'WATCHING') { cls = 'watch-news'; }
@@ -3722,6 +4294,10 @@ function _aiFeedRow(m) {
     : '<span class="ai-feed-col empty">—</span>';
 
   const tagsHtml = (p.tags || []).slice(0, 4).map(_aiTagChip).join('');
+  const alertsN = Number(m.alerts_processed);
+  const alertsHtml = Number.isFinite(alertsN) && alertsN > 0
+    ? `<span class="ai-feed-col ai-feed-alerts" title="Scanner alerts processed today">${alertsN}</span>`
+    : `<span class="ai-feed-col ai-feed-alerts empty" title="No alerts processed today">0</span>`;
   const newsClass = (p.news_headline || m.news_class) ? 'has-news' : '';
   const rowCls = ['ai-feed-row', m.alert_id ? 'clickable' : '', newsClass,
                   isFiltered ? 'filtered' : (isTrade ? 'trade' : '')]
@@ -3742,6 +4318,7 @@ function _aiFeedRow(m) {
       ${ftHtml}
       ${mcHtml}
       <span class="ai-feed-tags">${tagsHtml || '<span class="ai-feed-col empty">—</span>'}</span>
+      ${alertsHtml}
       <span class="ai-feed-tag ${cls}">${tag}</span>
     </div>
   `;
@@ -3785,8 +4362,10 @@ function _aiFeedSection(title, items, cls, sectionKey) {
 function _aiRenderFeed(fd) {
   const root = $('ai-feed');
   if (!root) return;
+  _aiSyncFeedDaySelect(fd);
   const items = ((fd && fd.items) || [])
     .filter((m) => !['FIRE', 'WHALE'].includes(m.type))
+    .filter((m) => m.type !== 'OFFERING' || Number(m.alerts_processed || 0) > 0)
     .slice();
   _aiFeedItems = items;
   _aiFeedRefreshTickerList();
@@ -3807,11 +4386,19 @@ function _aiFeedRender() {
   const root = $('ai-feed');
   if (!root) return;
   const filter = (_aiFeedFilter || '').trim().toUpperCase();
+  const dayLabel = (() => {
+    const sel = $('ai-feed-day');
+    if (sel && sel.selectedOptions && sel.selectedOptions[0]) return sel.selectedOptions[0].textContent;
+    return _aiFeedDay || 'Today';
+  })();
   let items = _aiFeedItems;
   if (filter) items = items.filter((m) => (m.ticker || '').toUpperCase().includes(filter));
 
   if (!items.length) {
-    root.innerHTML = `<div class="ai-feed-empty">${filter ? 'No alerts for ' + filter : 'No scanner messages yet'}</div>`;
+    const emptyMsg = filter
+      ? 'No alerts for ' + filter + ' on ' + dayLabel
+      : 'No scanner messages for ' + dayLabel;
+    root.innerHTML = `<div class="ai-feed-empty">${emptyMsg}</div>`;
     return;
   }
 
@@ -3827,10 +4414,34 @@ function _aiFeedRender() {
     _aiFeedSection('Active', active, 'action', 'active'),
     _aiFeedSection('Trade', trade, 'trade', 'trade'),
     _aiFeedSection('Filtered out', filtered, 'filtered', 'filtered'),
-  ].join('') || `<div class="ai-feed-empty">${filter ? 'No alerts for ' + filter : 'No scanner messages yet'}</div>`;
+  ].join('') || `<div class="ai-feed-empty">${filter ? 'No alerts for ' + filter + ' on ' + dayLabel : 'No scanner messages for ' + dayLabel}</div>`;
+}
+
+function _aiFeedWireDaySelect() {
+  const sel = $('ai-feed-day');
+  if (!sel || sel._wired) return;
+  sel._wired = true;
+  if (_aiFeedDay) {
+    for (const opt of sel.options) {
+      if (opt.value === _aiFeedDay) { sel.value = _aiFeedDay; break; }
+    }
+  }
+  sel.addEventListener('change', async () => {
+    _aiFeedDay = sel.value || 'today';
+    try { localStorage.setItem('aiFeedDay', _aiFeedDay); } catch (_) {}
+    const root = $('ai-feed');
+    if (root) root.innerHTML = '<div class="ai-feed-empty">Loading…</div>';
+    try {
+      const fd = await _aiFetchFeed(80);
+      _aiRenderFeed(fd);
+    } catch (_) {
+      if (root) root.innerHTML = '<div class="ai-feed-empty" style="color:var(--red);">Failed to load feed</div>';
+    }
+  });
 }
 
 function _aiFeedWire() {
+  _aiFeedWireDaySelect();
   const root = $('ai-feed');
   if (root && !root._wired) {
     root._wired = true;
@@ -3895,6 +4506,10 @@ async function _aiOpenDrawer(alertId) {
     const r = await fetch('/api/ai/alert/' + alertId).then(r => r.json());
     if (!r.ok) throw new Error(r.error || 'fail');
     _aiRenderDrawer(r);
+    const tr = r.trade;
+    if (tr && tr.id && String(tr.status || '').toUpperCase() === 'OPEN') {
+      _aiStartTradeAnalyticsPoll(Number(tr.id), { live: true });
+    }
   } catch (e) {
     body.innerHTML = `<div style="color:var(--red);font-size:11px;">${e.message}</div>`;
   }
@@ -3906,6 +4521,10 @@ function _aiCloseDrawer() {
   if (window._aiWatchPollTimer) {
     clearInterval(window._aiWatchPollTimer);
     window._aiWatchPollTimer = null;
+  }
+  if (window._aiTradeAnalyticsPoll) {
+    clearInterval(window._aiTradeAnalyticsPoll);
+    window._aiTradeAnalyticsPoll = null;
   }
 }
 
@@ -4025,14 +4644,154 @@ function _aiRenderWatchDrawer(r, ticker) {
   $('ai-drawer-body').innerHTML = html;
 }
 
+function _aiFmtDrawerPrice(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const x = Number(n);
+  return x >= 10 ? x.toFixed(2) : x.toFixed(3);
+}
+
+function _aiFmtCompactNum(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const x = Number(n);
+  const ax = Math.abs(x);
+  if (ax >= 1e9) return (x / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (ax >= 1e6) return (x / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (ax >= 1e3) return (x / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+  if (Number.isInteger(x)) return String(x);
+  return x.toFixed(1);
+}
+
+function _aiFmtDrawerPct(n, opts) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const x = Number(n);
+  const sign = x > 0 ? '+' : '';
+  const dec = opts && opts.prior ? 1 : (Math.abs(x) >= 100 ? 0 : 1);
+  const cls = x > 0 ? 'up' : (x < 0 ? 'down' : '');
+  return `<span class="pct ${cls}">${sign}${x.toFixed(dec)}%</span>`;
+}
+
+function _aiRenderAlertHistory(history, currentAlertId) {
+  if (!history || !history.length) return '';
+  const esc = (x) => String(x ?? '').replace(/</g, '&lt;');
+  const head = `
+    <div class="ai-drawer-table-head ai-alert-table-head">
+      <span>#</span><span>Time</span><span>Label</span><span>Price</span><span>% Day</span>
+      <span>FT</span><span>MC</span><span>RV</span><span>1V</span><span>IND</span><span>News</span>
+    </div>`;
+  const rows = history.map((h) => {
+    const t = h.ts ? new Date(h.ts * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
+    const num = h.rank != null ? `#${h.rank}` : `#${h.sequence || '?'}`;
+    const label = esc(h.label_detail || h.label || '—');
+    const pctDay = h.pct != null ? _aiFmtDrawerPct(h.pct) : '—';
+    const rv = h.rv != null ? `${Number(h.rv) >= 10 ? Math.round(h.rv) : Number(h.rv).toFixed(1)}x` : '—';
+    const indParts = (h.indicators || []).slice();
+    if (h.reverse_split) indParts.push(`R/S ${esc(h.reverse_split)}`);
+    const ind = indParts.join(', ') || '—';
+    const news = h.news_headline ? esc(String(h.news_headline)) : '—';
+    const isCur = currentAlertId && Number(h.alert_id) === Number(currentAlertId);
+    return `
+      <div class="ai-drawer-table-row ai-alert-table-row${isCur ? ' is-current' : ''}">
+        <span class="muted">${esc(num)}</span>
+        <span class="muted">${t}</span>
+        <span class="label">${label}</span>
+        <span>${_aiFmtDrawerPrice(h.price)}</span>
+        <span>${pctDay}</span>
+        <span>${_aiFmtCompactNum(h.float)}</span>
+        <span>${_aiFmtCompactNum(h.market_cap)}</span>
+        <span>${rv}</span>
+        <span>${_aiFmtCompactNum(h.volume_1v)}</span>
+        <span class="ind">${ind}</span>
+        <span class="news">${news}</span>
+      </div>`;
+  }).join('');
+  return `
+    <div class="ai-d-section">
+      <div class="ai-d-label">Alerts today (${history.length})</div>
+      <div class="ai-drawer-table-wrap">
+        <div class="ai-drawer-table">${head}${rows}</div>
+      </div>
+      <div style="color:var(--text3);font-size:10px;margin-top:4px;">Blue bar = this alert · full scanner fields from Discord message</div>
+    </div>`;
+}
+
+function _aiReviewOutcomeClass(grade, action) {
+  const a = String(action || '').toUpperCase();
+  const g = String(grade || '').toUpperCase();
+  if (a === 'TRADE' || g === 'STRONG') return 'trade';
+  if (a === 'MONITOR' || g === 'WATCH') return 'watch';
+  return 'skip';
+}
+
+function _aiReviewOutcomeLabel(grade, action) {
+  const a = String(action || '').toUpperCase();
+  const g = String(grade || '').toUpperCase();
+  if (a === 'TRADE' || (g === 'STRONG' && a !== 'PASS')) return 'TRADE';
+  if (a === 'MONITOR' || g === 'WATCH') return 'WATCH';
+  if (a === 'PASS' || g === 'SKIP') return 'PASS';
+  if (g === 'STRONG') return 'TRADE';
+  if (g === 'WATCH') return 'WATCH';
+  return 'PASS';
+}
+
+function _aiRenderAiReviewTable(reviews) {
+  if (!reviews || !reviews.length) {
+    return `
+      <div class="ai-d-section">
+        <div class="ai-d-label">AI review</div>
+        <div class="ai-d-card" style="color:var(--text2);">No GPT grades yet for this ticker today.</div>
+      </div>`;
+  }
+  const esc = (x) => String(x ?? '').replace(/</g, '&lt;');
+  const head = `
+    <div class="ai-drawer-table-head ai-review-table-head">
+      <span>Review</span><span>Time</span><span>Price</span><span>Δ Alert</span><span>Outcome</span><span>Reasoning</span>
+    </div>`;
+  const rows = reviews.map((d) => {
+    const t = d.ts ? new Date(d.ts * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
+    const labelRaw = d.review_label || (d.alert_number != null ? `#${d.alert_number}` : '—');
+    const labelHtml = String(labelRaw).split(' · ').map((part, i, arr) => {
+      const escPart = esc(part);
+      if (part === 're-entry') return `<span class="reentry-tag">${escPart}</span>`;
+      return escPart;
+    }).join(' · ');
+    const price = _aiFmtDrawerPrice(d.review_price != null ? d.review_price : d.entry_price);
+    const delta = d.pct_since_prior != null ? _aiFmtDrawerPct(d.pct_since_prior, { prior: true }) : '—';
+    const grade = esc(d.grade || '—');
+    const action = esc(d.action || '—');
+    const oc = _aiReviewOutcomeClass(d.grade, d.action);
+    const outcome = _aiReviewOutcomeLabel(d.grade, d.action);
+    const reason = esc(d.reasoning || '—');
+    return `
+      <div class="ai-drawer-table-row ai-review-table-row">
+        <span class="review-label">${labelHtml}</span>
+        <span class="muted">${t}</span>
+        <span>${price}</span>
+        <span>${delta}</span>
+        <span class="outcome ${oc}">${outcome}</span>
+        <span class="reason">${reason}</span>
+      </div>`;
+  }).join('');
+  return `
+    <div class="ai-d-section">
+      <div class="ai-d-label">AI review (${reviews.length})</div>
+      <div class="ai-drawer-table-wrap">
+        <div class="ai-drawer-table">${head}${rows}</div>
+      </div>
+      <div style="color:var(--text3);font-size:10px;margin-top:4px;">Review # = episode alert count · scanner # = Discord rank · <span class="reentry-tag" style="color:var(--amber);font-weight:700;">re-entry</span> = after a closed trade today · Δ Alert = % vs previous alert price</div>
+    </div>`;
+}
+
 function _aiRenderDrawer(r) {
   const a = r.alert || {};
   const s = r.score;
   const g = r.grader || {};
   const aiDecs = r.ai_decisions || [];
-  const latestAi = aiDecs.length ? aiDecs[aiDecs.length - 1] : null;
+  const aiReviews = r.ai_reviews || [];
+  const alertHistory = r.alert_history || [];
+  const latestAi = aiDecs.length ? aiDecs[aiDecs.length - 1] : (aiReviews.length ? aiReviews[aiReviews.length - 1] : null);
   const m = r.monitor || [];
   const tr = r.trade;
+  const tradeAnalytics = r.trade_analytics || null;
   const parsed = a.parsed_json ? (() => { try { return JSON.parse(a.parsed_json); } catch { return {}; } })() : {};
   const scoreJson = s && s.raw_json ? (() => { try { return JSON.parse(s.raw_json); } catch { return {}; } })() : {};
   const aiOut = latestAi && latestAi.ai_output ? latestAi.ai_output : {};
@@ -4051,111 +4810,80 @@ function _aiRenderDrawer(r) {
     ? `<span class="ai-d-pill ${s.decision === 'TRADE' ? 'trade' : s.decision === 'WATCH-NEWS' ? 'watch-news' : s.decision === 'WATCH' ? 'watch' : 'skip'}">${s.decision} · ${s.score}</span>`
     : (latestAi ? `<span class="ai-d-pill ${latestAi.action === 'TRADE' ? 'trade' : latestAi.action === 'MONITOR' ? 'watch' : 'skip'}">${latestAi.grade || latestAi.action || 'GPT'}</span>` : '');
 
-  const kv = (k, v) => v == null || v === '' ? '' : `<div class="k">${k}</div><div class="v">${v}</div>`;
   const esc = (x) => String(x || '').replace(/</g, '&lt;');
+  const kv = (k, v) => v == null || v === '' ? '' : `<div class="k">${k}</div><div class="v">${v}</div>`;
 
   let html = `
     <div class="ai-d-section">
-      <div class="ai-d-label">Raw message</div>
-      <div class="ai-d-card">${esc(a.raw)}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">${newsPill} ${graderPill} ${decPill}</div>
-    </div>
-
-    <div class="ai-d-section">
-      <div class="ai-d-label">Parsed fields</div>
-      <div class="ai-d-kv">
-        ${kv('ticker', parsed.ticker)}
-        ${kv('type', parsed.type)}
-        ${kv('price', parsed.price)}
-        ${kv('pct', parsed.pct != null ? parsed.pct + '%' : null)}
-        ${kv('float', parsed.float)}
-        ${kv('market_cap', parsed.market_cap)}
-        ${kv('rv', parsed.rv != null ? parsed.rv + 'x' : null)}
-        ${kv('rank', parsed.rank != null ? '#' + parsed.rank : null)}
-        ${kv('news_headline', parsed.news_headline)}
-        ${kv('news_class', a.news_class)}
-      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">${newsPill} ${graderPill} ${decPill}</div>
+      <details class="ai-drawer-details" style="margin-top:6px;">
+        <summary>Raw Discord message</summary>
+        <div class="ai-d-card" style="margin-top:6px;">${esc(a.raw)}</div>
+      </details>
     </div>
   `;
 
-  if (latestAi) {
-    const reason = aiOut.reason || aiOut.summary || scoreJson.reason || s?.reason || '—';
-    html += `
-      <div class="ai-d-section">
-        <div class="ai-d-label">GPT grader</div>
-        <div class="ai-d-kv">
-          ${kv('grade', latestAi.grade)}
-          ${kv('action', latestAi.action)}
-          ${kv('entry', latestAi.entry_price)}
-          ${kv('target', latestAi.target_price)}
-          ${kv('latency', latestAi.latency_ms != null ? latestAi.latency_ms + ' ms' : null)}
-          ${kv('cost', latestAi.cost_gbp != null ? '£' + Number(latestAi.cost_gbp).toFixed(4) : null)}
-        </div>
-        <div class="ai-d-label" style="margin-top:6px;">Reasoning</div>
-        <div class="ai-d-card">${esc(reason)}</div>
-        ${flags.length ? `<div class="ai-d-label" style="margin-top:6px;">Risk flags</div>
-          <div class="ai-d-card">${flags.map((f) => '• ' + String(f)).join('\n')}</div>` : ''}
-      </div>
-    `;
-  } else if (s) {
-    html += `
-      <div class="ai-d-section">
-        <div class="ai-d-label">GPT grader</div>
-        <div class="ai-d-kv">
-          ${kv('decision', s.decision)}
-          ${kv('score', s.score)}
-          ${kv('entry', s.entry)}
-          ${kv('tp', s.tp)}
-          ${kv('stop', s.stop)}
-          ${kv('tp_pct', scoreJson.tp_pct)}
-          ${kv('stop_pct', scoreJson.stop_pct)}
-        </div>
-        <div class="ai-d-label" style="margin-top:6px;">Reasoning</div>
-        <div class="ai-d-card">${esc(s.reason || '—')}</div>
-        ${flags.length ? `<div class="ai-d-label" style="margin-top:6px;">Risk flags</div>
-          <div class="ai-d-card">${flags.map((f) => '• ' + String(f)).join('\n')}</div>` : ''}
-      </div>
-    `;
-  } else {
-    html += `
-      <div class="ai-d-section">
-        <div class="ai-d-label">GPT grader</div>
-        <div class="ai-d-kv">
-          ${kv('Status', g.active_label || g.state || '—')}
-          ${g.alert_count ? kv('Alerts today', g.alert_count) : ''}
-          ${g.defer_code ? kv('Stage', _aiHumanReason(g.defer_code)) : ''}
-        </div>
-        <div class="ai-d-card" style="color:var(--text2);">${esc(g.status_message || 'No GPT grade yet for this alert.')}</div>
-      </div>
-    `;
-  }
+  html += _aiRenderAlertHistory(alertHistory, a.id);
+  html += _aiRenderAiReviewTable(aiReviews);
 
-  if (aiDecs.length > 1) {
-    html += `
-      <div class="ai-d-section">
-        <div class="ai-d-label">GPT calls for this alert (${aiDecs.length})</div>
-        <div style="display:flex;flex-direction:column;gap:4px;">
-          ${aiDecs.map((d) => {
-            const t = d.ts ? new Date(d.ts * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
-            return `<div class="ai-d-card" style="font-size:11px;"><span style="color:var(--text3);">${t}</span> · ${esc(d.grade)} / ${esc(d.action)} · entry ${esc(d.entry_price)}</div>`;
-          }).join('')}
+  if (!aiReviews.length) {
+    if (latestAi) {
+      const reason = latestAi.reasoning || aiOut.reasoning || aiOut.reason || aiOut.summary || scoreJson.reason || s?.reason || '—';
+      html += `
+        <div class="ai-d-section">
+          <div class="ai-d-label">Latest GPT grade</div>
+          <div class="ai-d-kv">
+            ${kv('grade', latestAi.grade)}
+            ${kv('action', latestAi.action)}
+            ${kv('entry', latestAi.entry_price)}
+            ${kv('target', latestAi.target_price)}
+          </div>
+          <div class="ai-d-label" style="margin-top:6px;">Reasoning</div>
+          <div class="ai-d-card">${esc(reason)}</div>
+          ${flags.length ? `<div class="ai-d-label" style="margin-top:6px;">Risk flags</div>
+            <div class="ai-d-card">${flags.map((f) => '• ' + String(f)).join('\n')}</div>` : ''}
         </div>
-      </div>
-    `;
+      `;
+    } else if (s) {
+      html += `
+        <div class="ai-d-section">
+          <div class="ai-d-label">GPT grader</div>
+          <div class="ai-d-kv">
+            ${kv('decision', s.decision)}
+            ${kv('score', s.score)}
+            ${kv('entry', s.entry)}
+            ${kv('tp', s.tp)}
+            ${kv('stop', s.stop)}
+          </div>
+          <div class="ai-d-label" style="margin-top:6px;">Reasoning</div>
+          <div class="ai-d-card">${esc(s.reason || '—')}</div>
+        </div>
+      `;
+    } else {
+      html += `
+        <div class="ai-d-section">
+          <div class="ai-d-label">Grader status</div>
+          <div class="ai-d-card" style="color:var(--text2);">${esc(g.status_message || 'No GPT grade yet for this alert.')}</div>
+        </div>
+      `;
+    }
   }
 
   if (tr) {
     const rej = tr.status === 'REJECTED' || tr.status === 'BLOCKED_T212';
-    const disp = tr.display_ticker || (tr.ticker || '').replace(/_US_EQ$/i, '').trim() || tr.ticker || '—';
-    const tcg = Number(tr.capital_gbp || 0);
-    const depLb =
-      tcg > 0 ? '£' + tcg.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-    html += `
+    const isOpen = String(tr.status || '').toUpperCase() === 'OPEN';
+    if (isOpen && tr.id) {
+      html += _aiRenderTradeAnalyticsPanel(tradeAnalytics, tr, m, { live: true });
+    } else {
+      const disp = _aiDisplayTicker(tr.ticker, tr.display_ticker);
+      const tcg = Number(tr.capital_gbp || 0);
+      const depLb =
+        tcg > 0 ? '£' + tcg.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+      html += `
       <div class="ai-d-section">
         <div class="ai-d-label">Trade</div>
         <div class="ai-d-kv">
-          ${kv('display ticker', disp)}
-          ${kv('T212 instrument', tr.ticker)}
+          ${kv('ticker', disp)}
           ${kv('slot', tr.slot)}
           ${kv('status', tr.status)}
           ${kv('deployed £ (approx)', depLb)}
@@ -4168,8 +4896,10 @@ function _aiRenderDrawer(r) {
         </div>
       </div>
     `;
-    if (m.length) {
-      html += `
+      if (!isOpen && tr.id && tradeAnalytics && tradeAnalytics.sample_count) {
+        html += _aiRenderTradeAnalyticsPanel(tradeAnalytics, tr, m, { live: false });
+      } else if (m.length && !tradeAnalytics?.sample_count) {
+        html += `
         <div class="ai-d-section">
           <div class="ai-d-label">Monitor decisions (${m.length})</div>
           <div class="ai-d-monitor">
@@ -4182,8 +4912,8 @@ function _aiRenderDrawer(r) {
               </div>
             `).join('')}
           </div>
-        </div>
-      `;
+        </div>`;
+      }
     }
   }
 
@@ -4192,7 +4922,7 @@ function _aiRenderDrawer(r) {
 
 /** AI Trade history table — keep in sync with `.ai-trade-head` / `.ai-trade-row` */
 const AI_TRADE_HIST_COLS =
-  '72px minmax(0,104px) 74px 72px 74px minmax(84px,max-content) 72px minmax(0,1fr)';
+  '72px 28px minmax(0,104px) 74px 72px 74px minmax(84px,max-content) 72px minmax(0,1fr)';
 
 function _aiRenderTradeRow(t) {
     const rej = t.status === 'REJECTED' || t.status === 'BLOCKED_T212';
@@ -4210,8 +4940,8 @@ function _aiRenderTradeRow(t) {
     const effGbp = rej || isPending ? null : (liveGbp != null && !Number.isNaN(liveGbp) ? liveGbp : (t.pnl_gbp != null ? Number(t.pnl_gbp) : null));
     const pnlCls = effGbp != null && !Number.isNaN(effGbp) && effGbp > 0 ? 'up' : effGbp != null && !Number.isNaN(effGbp) && effGbp < 0 ? 'down' : '';
     const opened = t.open_ts ? new Date(t.open_ts * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
-    const disp = escapeHtml(t.display_ticker || (t.ticker || '').replace(/_US_EQ$/i, '').trim() || t.ticker || '—');
-    const titleFull = escapeHtml(t.ticker || '');
+    const disp = escapeHtml(_aiDisplayTicker(t.ticker, t.display_ticker));
+    const titleFull = disp;
     const priceBuy = t.entry_price;
     const priceSell = rej ? null : (isPending ? null : t.exit_price);
     const pct = isPending ? null : effPct;
@@ -4247,10 +4977,14 @@ function _aiRenderTradeRow(t) {
         : `<span class="ai-trade-num">—</span>`;
 
     const tickerCell = `<span class="ai-trade-num" title="${titleFull}">${disp}</span>`;
+    const infoCell = t.alert_id
+      ? `<span class="ai-feed-info-cell"><button type="button" class="ai-trade-info-btn" data-alert-id="${Number(t.alert_id)}" title="Alerts &amp; AI review" aria-label="Alerts and AI review"><i class="ti ti-info-circle ai-feed-info"></i></button></span>`
+      : `<span class="ai-feed-info-cell"></span>`;
 
     return `
       <div class="ai-trade-row ${cls}" style="grid-template-columns:${AI_TRADE_HIST_COLS};">
         <span class="ai-trade-num">${opened}</span>
+        ${infoCell}
         ${tickerCell}
         <span class="ai-trade-num" title="Scorer entry / limit reference">${_aiFmtPrice(priceBuy)}</span>
         ${costCell}
@@ -4435,6 +5169,13 @@ function _aiRenderWatchHistory(wh) {
   });
 }
 
+function _aiFmtPctSigned(n, digits) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const d = digits != null ? digits : 2;
+  const v = Number(n);
+  return `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`;
+}
+
 async function _aiOpenWatchHistoryDrawer(histId) {
   if (!histId) return;
   const dr = $('ai-drawer'); const bd = $('ai-drawer-backdrop');
@@ -4452,10 +5193,21 @@ async function _aiOpenWatchHistoryDrawer(histId) {
     clearInterval(window._aiWatchPollTimer);
     window._aiWatchPollTimer = null;
   }
+  if (window._aiTradeAnalyticsPoll) {
+    clearInterval(window._aiTradeAnalyticsPoll);
+    window._aiTradeAnalyticsPoll = null;
+  }
   try {
     const r = await _aiFetchAiHistoryDetail(histId);
     if (!r.ok) throw new Error(r.error || 'fail');
     _aiRenderWatchHistoryDrawer(r);
+    const liveTrade = r.is_live && r.watch && r.watch.trade_id && (
+      r.watch.reason === 'TRADE_OPEN'
+      || String(r.watch.trade_status || '').toUpperCase() === 'OPEN'
+    );
+    if (liveTrade) {
+      _aiStartTradeAnalyticsPoll(Number(r.watch.trade_id), { live: true });
+    }
   } catch (e) {
     body.innerHTML = `<div style="color:var(--red);font-size:11px;">${e.message}</div>`;
   }
@@ -4470,6 +5222,7 @@ function _aiRenderWatchHistoryDrawer(r) {
   const aiDecs = r.ai_decisions || [];
   const wp = r.watch_period || null;
   const wpScores = (r.watch_period_scores || []).length ? r.watch_period_scores : [];
+  const tradeAnalytics = r.trade_analytics || (audit && audit.trade_analytics) || null;
   const ep = w.episode_type || 'WATCH';
   const isTrade = ep === 'TRADE';
   const isLive = !!(r.is_live) || w.reason === 'WATCH_ACTIVE' || (w.ended_ts != null && Number(w.ended_ts) <= 0);
@@ -4586,6 +5339,23 @@ function _aiRenderWatchHistoryDrawer(r) {
     </div>
   `;
 
+  if (isTrade && tid && (tradeAnalytics || isLive)) {
+    const tradeObj = {
+      display_ticker: _aiDisplayTicker(w.trade_instrument || w.ticker, w.trade_display_ticker),
+      ticker: w.trade_instrument || w.ticker,
+      slot: 0,
+      status: w.trade_status,
+      entry_price: w.trade_entry,
+      capital_gbp: null,
+    };
+    const monLog = (r.trade_monitor && r.trade_monitor.length)
+      ? r.trade_monitor
+      : ((audit && Array.isArray(audit.monitor_log)) ? audit.monitor_log : []);
+    html += _aiRenderTradeAnalyticsPanel(tradeAnalytics, tradeObj, monLog, {
+      live: isLive && w.reason === 'TRADE_OPEN',
+    });
+  }
+
   const evs = (audit && Array.isArray(audit.events)) ? audit.events : [];
   if (evs.length) {
     html += `<div class="ai-d-section"><div class="ai-d-label">Watch session log (${evs.length})</div>`;
@@ -4701,7 +5471,7 @@ function _aiRenderWatchHistoryDrawer(r) {
     }
 
     const ml = audit.monitor_log;
-    if (Array.isArray(ml) && ml.length) {
+    if (Array.isArray(ml) && ml.length && !(isTrade && tid && tradeAnalytics && tradeAnalytics.sample_count)) {
       const tail = ml.slice(-40);
       const rows = tail
         .map((row) => {
@@ -4798,7 +5568,7 @@ function _aiRenderWatchHistoryDrawer(r) {
 
   if (w.trade_id) {
     const isRej = w.trade_status === 'REJECTED' || w.trade_status === 'BLOCKED_T212';
-    const dispT = escapeHtml(w.trade_display_ticker || (w.trade_instrument || '').replace(/_US_EQ$/i, '').trim() || w.trade_instrument || '—');
+    const dispT = escapeHtml(_aiDisplayTicker(w.trade_instrument || w.ticker, w.trade_display_ticker));
     html += `
     <div class="ai-d-section">
       <div class="ai-d-label">Broker row</div>
@@ -4840,6 +5610,7 @@ function _aiRenderTrades(tr) {
   const tradeHead = `
     <div class="ai-trade-head" style="grid-template-columns:${AI_TRADE_HIST_COLS};">
       <span>TIME</span>
+      <span aria-hidden="true"></span>
       <span>TICKER</span>
       <span>ENTRY</span>
       <span>DEPLOYED</span>
@@ -4867,6 +5638,20 @@ function _aiRenderTrades(tr) {
     sec('Sell pending', pending, 'awaiting broker confirm') +
     sec('Closed', closed, '') +
     sec('Rejected (no fill)', rejected, '');
+  _aiWireTradeHistory(root);
+}
+
+function _aiWireTradeHistory(root) {
+  if (!root || root._wiredInfo) return;
+  root._wiredInfo = true;
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-alert-id]');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const id = parseInt(btn.getAttribute('data-alert-id'), 10);
+    if (id > 0) _aiOpenDrawer(id);
+  });
 }
 
 

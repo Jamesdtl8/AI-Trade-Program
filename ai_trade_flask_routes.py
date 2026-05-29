@@ -36,20 +36,25 @@ def _grader_drawer_context(db, alert: dict) -> dict:
     st_row = None
     if tk and alert_ts:
         st_row = grader_state.all_for_date(db.uk_date_iso(alert_ts)).get(tk)
-    if not st_row and tk:
-        st_row = grader_state.get_or_create(tk, ts=alert_ts or None)
 
+    bl = db.t212_blacklist_get(tk) if tk else None
     st = str(st_row.get("state") or "") if st_row else ""
     alert_count = len(st_row.get("alerts") or []) if st_row else 0
     disqual = st_row.get("disqualify_reason") if st_row else None
     active_label = grader_state.ui_label(st_row) if st_row else None
+    if bl:
+        tag = str(bl["reason"] or "blacklist")
+        st = "DISQUALIFIED"
+        disqual = disqual or f"blacklist:{tag}"
+        active_label = "FILTERED"
 
     defer_code = None
     if alert_id:
-        wh = db.fetchone(
+        wh_row = db.fetchone(
             "SELECT audit_json FROM watch_history WHERE alert_id=? ORDER BY id DESC LIMIT 1",
             (int(alert_id),),
         )
+        wh = dict(wh_row) if wh_row else None
         if wh and wh.get("audit_json"):
             try:
                 audit = _json.loads(wh["audit_json"])
@@ -128,6 +133,17 @@ def api_ai_status():
     px_map = _ai_live_price_usd_by_ticker()
     today_pnl_open_unreal = _ai_open_trades_unrealized_gbp(px_map)
     today_pnl = round(today_pnl_realized + today_pnl_open_unreal, 2)
+    lifetime_pnl_row = db.fetchone(
+        """SELECT COALESCE(SUM(pnl_gbp),0) AS s FROM trades
+           WHERE status='CLOSED' AND pnl_gbp IS NOT NULL""",
+    )
+    lifetime_pnl_realized = float(lifetime_pnl_row["s"]) if lifetime_pnl_row else 0.0
+    lifetime_pnl_open_unreal = today_pnl_open_unreal
+    lifetime_pnl = round(lifetime_pnl_realized + lifetime_pnl_open_unreal, 2)
+    closed_lifetime = db.fetchone(
+        """SELECT COUNT(*) AS c FROM trades
+           WHERE status='CLOSED' AND pnl_gbp IS NOT NULL""",
+    )
     open_trades = db.fetchone("SELECT COUNT(*) AS c FROM trades WHERE status='OPEN'")
     broker_rows = _ai_broker_position_rows()
     broker_open = len(broker_rows)
@@ -158,27 +174,36 @@ def api_ai_status():
             "usage_calls_today": int(day_s["calls"]),
         }
         ai_usage_payload = {
-            "usage_gbp_total": round(float(all_s["sum_gbp"]), 2),
-            "usage_gbp_today": round(float(day_s["sum_gbp"]), 2),
+            "usage_gbp_total": round(float(all_s["sum_gbp"]), 4),
+            "usage_gbp_today": round(float(day_s["sum_gbp"]), 4),
             "usage_calls_total": int(all_s["calls"]),
             "usage_calls_today": int(day_s["calls"]),
-            "openai_gbp_total": round(float(all_s["openai_gbp"]), 2),
-            "openai_gbp_today": round(float(day_s["openai_gbp"]), 2),
-            "gemini_gbp_total": round(float(all_s["gemini_gbp"]), 2),
-            "gemini_gbp_today": round(float(day_s["gemini_gbp"]), 2),
+            "gemini_gbp_total": round(float(all_s["gemini_gbp"]), 4),
+            "gemini_gbp_today": round(float(day_s["gemini_gbp"]), 4),
+            "gemini_calls_today": int(day_s.get("gemini_calls", 0)),
+            "openai_gbp_total": round(float(all_s["openai_gbp"]), 4),
+            "openai_gbp_today": round(float(day_s["openai_gbp"]), 4),
+            "openai_calls_today": int(day_s.get("openai_calls", 0)),
         }
     except Exception as _exc:
         _log.debug("llm usage on ai status: %s", _exc)
+    cap = cfg.capital_sizing_snapshot(db=db, cash=cash)
     return jsonify(
         ok=True,
         engine=eng.status(),
-        slot_capital_gbp=cfg.SLOT_CAPITAL_GBP,
+        slot_capital_gbp=cap.get("slot_capital_gbp") or cfg.SLOT_CAPITAL_GBP,
+        slot_capital_static_gbp=cfg.SLOT_CAPITAL_GBP,
+        capital_sizing=cap,
         gbp_usd_rate=cfg.GBP_USD_RATE,
         slot_count=cfg.SLOT_COUNT,
         today_pnl_gbp=today_pnl,
         today_pnl_realized_gbp=round(today_pnl_realized, 2),
         today_pnl_open_unreal_gbp=today_pnl_open_unreal,
         today_pnl_day_start_ts=day0,
+        lifetime_pnl_gbp=lifetime_pnl,
+        lifetime_pnl_realized_gbp=round(lifetime_pnl_realized, 2),
+        lifetime_pnl_open_unreal_gbp=lifetime_pnl_open_unreal,
+        closed_lifetime=int(closed_lifetime["c"]) if closed_lifetime else 0,
         open_trades=open_trades_n,
         broker_open_positions=broker_open,
         closed_today=int(closed_today["c"]) if closed_today else 0,
@@ -315,18 +340,50 @@ def _ai_broker_position_rows() -> list[dict[str, Any]]:
     return out
 
 
+def _ai_clear_slot_broker_overlay(s: dict) -> None:
+    """Remove broker display fields from an empty slot card."""
+    for key in (
+        "broker_managed",
+        "broker_unassigned",
+        "display_ticker",
+        "wallet_total_cost_gbp",
+        "wallet_current_value_gbp",
+        "unreal_gbp",
+        "unreal_pct",
+        "wallet_fx_impact_gbp",
+        "entry",
+        "last_price",
+        "last_decision",
+        "opened_ts",
+        "stop",
+        "tp",
+    ):
+        s.pop(key, None)
+    s["state"] = "OPEN"
+    s["ticker"] = None
+    s["trade_id"] = None
+    s["capital_gbp"] = 0.0
+
+
 def _ai_merge_broker_into_slots(snap: dict[str, Any], broker_rows: list[dict[str, Any]]) -> None:
     """Overlay broker positions onto slot cards — broker is the display source of truth."""
+    slots = snap.get("slots") or []
+    broker_tickers = {str(r["ticker"]).upper() for r in (broker_rows or []) if r.get("ticker")}
+
     if not broker_rows:
+        for s in slots:
+            st = str(s.get("state") or "").upper()
+            if st in ("ACTIVE", "SELL_PENDING") and s.get("trade_id"):
+                continue
+            if st == "OPEN" and not s.get("trade_id"):
+                _ai_clear_slot_broker_overlay(s)
         return
     try:
         from ai_sandbox import t212_ai as _t212_ai_disp
     except Exception:
         _t212_ai_disp = None
 
-    slots = snap.get("slots") or []
     by_ticker = {str(r["ticker"]).upper(): r for r in broker_rows}
-    broker_tickers = set(by_ticker.keys())
     assigned: set[str] = set()
 
     for s in slots:
@@ -547,11 +604,85 @@ def api_ai_slots():
                         s["unreal_gbp"] = round(cg * float(s["unreal_pct"]) / 100.0, 2)
                 except (TypeError, ValueError):
                     pass
+            tid = s.get("trade_id")
+            st = str(s.get("state") or "").upper()
+            if tid and st in ("ACTIVE", "SELL_PENDING"):
+                try:
+                    db = _ai_db()
+                    wh = db.fetchone(
+                        """SELECT id FROM watch_history
+                            WHERE trade_id=? AND reason='TRADE_OPEN'
+                            ORDER BY id DESC LIMIT 1""",
+                        (int(tid),),
+                    )
+                    if wh:
+                        s["watch_hist_id"] = int(wh["id"])
+                except Exception as exc:
+                    _log.debug("slot watch_hist_id failed trade_id=%s: %s", tid, exc)
         _ai_merge_broker_into_slots(snap, broker_rows)
     except Exception as exc:
         _log.debug("ai slot enrich failed: %s", exc)
     snap["broker_positions"] = broker_rows
     return jsonify(ok=True, **snap)
+
+
+_SCANNER_MOVEMENT_TYPES = frozenset({"SCANNER", "SCANNER_EDIT", "NEWS_TESTER"})
+_FEED_IGNORE_TYPES = frozenset({"FIRE", "WHALE"})
+
+
+def _feed_day_options(now: float | None = None) -> list[dict[str, str]]:
+    """Today, Yesterday, prior 5 UK calendar days, and All."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/London")
+    t = float(now if now is not None else __import__("time").time())
+    today = dt.datetime.fromtimestamp(t, tz=tz).date()
+    opts: list[dict[str, str]] = [
+        {"value": "today", "label": "Today"},
+        {"value": "yesterday", "label": "Yesterday"},
+    ]
+    for i in range(2, 7):
+        d = today - dt.timedelta(days=i)
+        opts.append({"value": d.isoformat(), "label": d.strftime("%a %d %b")})
+    opts.append({"value": "all", "label": "All"})
+    return opts
+
+
+def _feed_day_window(day: str, *, now: float | None = None) -> tuple[float | None, float | None, str]:
+    """Return (since_ts, until_ts_exclusive, state_date_iso) for feed filtering."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    cfg = _ai_config()
+    db = _ai_db()
+    tz = ZoneInfo("Europe/London")
+    t = float(now if now is not None else __import__("time").time())
+    today_dt = dt.datetime.fromtimestamp(t, tz=tz).date()
+    key = (day or "today").strip().lower()
+
+    if key == "all":
+        return None, None, db.uk_date_iso(t)
+
+    if key == "today":
+        since = cfg.uk_day_start_ts(t)
+        return since, None, today_dt.isoformat()
+
+    if key == "yesterday":
+        y_date = today_dt - dt.timedelta(days=1)
+        start = dt.datetime.combine(y_date, dt.time.min, tzinfo=tz)
+        end = dt.datetime.combine(today_dt, dt.time.min, tzinfo=tz)
+        return start.timestamp(), end.timestamp(), y_date.isoformat()
+
+    try:
+        picked = dt.datetime.strptime(key, "%Y-%m-%d").date()
+    except ValueError:
+        since = cfg.uk_day_start_ts(t)
+        return since, None, today_dt.isoformat()
+
+    start = dt.datetime.combine(picked, dt.time.min, tzinfo=tz)
+    end = start + dt.timedelta(days=1)
+    return start.timestamp(), end.timestamp(), picked.isoformat()
 
 
 @app.get("/api/ai/feed")
@@ -561,19 +692,23 @@ def api_ai_feed():
     Joins alerts with their latest score (if any) so the row shows the final
     decision tag without a second round trip.
 
-    One row per ticker (newest alert only): repeated pings for the same
-    symbol are collapsed. The DB scan uses a larger cap so we still return up to
-    ``limit`` distinct tickers when one name dominates recent traffic.
-    FIRE and WHALE alert types are ignored entirely.
+    One row per ticker (prefers movement/SCANNER rows): repeated pings for the
+    same symbol are collapsed. The DB scan uses a larger cap so we still return
+    up to ``limit`` distinct tickers when one name dominates recent traffic.
+    FIRE, WHALE, and standalone OFFERING alerts are omitted. OFFERING rows appear
+    only when that ticker also has a movement SCANNER alert on the selected day.
+
+    Query ``day``: ``today`` (default), ``yesterday``, ``YYYY-MM-DD``, or ``all``.
     """
     db = _ai_db()
     try:
         limit = min(max(int(request.args.get("limit", 50)), 1), 500)
     except ValueError:
         limit = 50
-    fetch_cap = min(3000, max(300, limit * 40))
-    rows = db.fetchall(
-        """
+    day = (request.args.get("day") or "today").strip().lower()
+    since_ts, until_ts, state_date = _feed_day_window(day)
+    fetch_cap = min(5000, max(500, limit * 40 if day == "all" else limit * 25))
+    sql = """
         SELECT a.id AS alert_id, a.ts, a.ticker, a.type, a.raw, a.news_class, a.parsed_json,
                s.score, s.decision, s.reason
         FROM alerts a
@@ -582,11 +717,20 @@ def api_ai_feed():
                    ROW_NUMBER() OVER (PARTITION BY alert_id ORDER BY ts DESC) AS rn
             FROM scores
         ) s ON s.alert_id = a.id AND s.rn = 1
-        ORDER BY a.ts DESC
-        LIMIT ?
-        """,
-        (fetch_cap,),
-    )
+    """
+    params: list = []
+    where: list[str] = []
+    if since_ts is not None:
+        where.append("a.ts >= ?")
+        params.append(float(since_ts))
+    if until_ts is not None:
+        where.append("a.ts < ?")
+        params.append(float(until_ts))
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY a.ts DESC LIMIT ?"
+    params.append(fetch_cap)
+    rows = db.fetchall(sql, tuple(params))
     import json as _json
 
     latest_rows = db.fetchall(
@@ -607,12 +751,54 @@ def api_ai_feed():
 
     from ai_sandbox.grader import state as grader_state
 
-    state_map = grader_state.all_for_date(db.uk_date_iso())
+    state_map = grader_state.all_for_date(state_date)
+    movement_sql = """SELECT DISTINCT UPPER(ticker) AS ticker
+             FROM alerts
+            WHERE ticker IS NOT NULL AND TRIM(ticker) != ''
+              AND type IN ('SCANNER', 'SCANNER_EDIT', 'NEWS_TESTER')"""
+    movement_params: list = []
+    if since_ts is not None:
+        movement_sql += " AND ts >= ?"
+        movement_params.append(float(since_ts))
+    if until_ts is not None:
+        movement_sql += " AND ts < ?"
+        movement_params.append(float(until_ts))
+    movement_rows = db.fetchall(movement_sql, tuple(movement_params))
+    tickers_with_movement = {
+        str(r["ticker"] or "").strip().upper()
+        for r in movement_rows
+        if str(r["ticker"] or "").strip()
+    }
+    count_sql = """SELECT UPPER(ticker) AS ticker, COUNT(*) AS alert_count
+             FROM alerts
+            WHERE ticker IS NOT NULL AND TRIM(ticker) != ''
+              AND type IN ('SCANNER', 'SCANNER_EDIT', 'NEWS_TESTER')"""
+    count_params: list = []
+    if since_ts is not None:
+        count_sql += " AND ts >= ?"
+        count_params.append(float(since_ts))
+    if until_ts is not None:
+        count_sql += " AND ts < ?"
+        count_params.append(float(until_ts))
+    count_sql += " GROUP BY UPPER(ticker)"
+    count_rows = db.fetchall(count_sql, tuple(count_params))
+    ticker_alert_counts = {
+        str(r["ticker"] or "").strip().upper(): int(r["alert_count"] or 0)
+        for r in count_rows
+    }
+    blacklist_map = {
+        str(r["ticker"] or "").strip().upper(): str(r["reason"] or "blacklist")
+        for r in db.fetchall("SELECT ticker, reason FROM t212_blacklist")
+    }
 
     items = []
     for r in rows:
         d = dict(r)
-        if d.get("type") in ("FIRE", "WHALE"):
+        atype = d.get("type")
+        if atype in _FEED_IGNORE_TYPES:
+            continue
+        tk = (d.get("ticker") or "").strip().upper()
+        if atype == "OFFERING" and (not tk or tk not in tickers_with_movement):
             continue
         parsed = {}
         if d.get("parsed_json"):
@@ -622,7 +808,6 @@ def api_ai_feed():
                 parsed = {}
         alert_score = d.get("score")
         alert_decision = d.get("decision")
-        tk = (d.get("ticker") or "").strip().upper()
         eff_score, eff_decision = alert_score, alert_decision
         if tk and tk in ticker_latest:
             eff_score, eff_decision = ticker_latest[tk]
@@ -630,8 +815,28 @@ def api_ai_feed():
         active_label = grader_state.ui_label(st_row) if st_row else None
         grader_st = st_row.get("state") if st_row else None
         disqualify = st_row.get("disqualify_reason") if st_row else None
+        if st_row and str(st_row.get("state") or "") == "TRADED":
+            eff_decision = "CLOSED"
         if st_row and str(st_row.get("state") or "") == "PASS":
             disqualify = disqualify or "ai_pass"
+        if not st_row and d.get("news_class") == "NEGATIVE":
+            active_label = "FILTERED"
+            grader_st = "DISQUALIFIED"
+            disqualify = "negative_news"
+        bl_reason = blacklist_map.get(tk) if tk else None
+        if bl_reason:
+            active_label = "FILTERED"
+            grader_st = grader_st or "DISQUALIFIED"
+            disqualify = disqualify or f"blacklist:{bl_reason}"
+        elif (
+            tk
+            and st_row
+            and str(st_row.get("state") or "") == "NEW"
+            and int(st_row.get("alert_count") or 0) == 0
+            and ticker_alert_counts.get(tk, 0) >= 2
+        ):
+            active_label = "WATCHING"
+            grader_st = "WATCHING"
         items.append(
             {
                 "alert_id": d["alert_id"],
@@ -647,6 +852,7 @@ def api_ai_feed():
                 "grader_state": grader_st,
                 "active_label": active_label,
                 "disqualify_reason": disqualify,
+                "alerts_processed": ticker_alert_counts.get(tk, 0) if tk else 0,
                 "parsed": {
                     "price": parsed.get("price"),
                     "pct": parsed.get("pct"),
@@ -660,20 +866,33 @@ def api_ai_feed():
             }
         )
 
-    # Newest-first: first row wins per ticker; scan until we have ``limit`` rows.
-    deduped: list = []
-    seen: set[str] = set()
+    from collections import defaultdict
+
+    by_ticker: dict[str, list[dict]] = defaultdict(list)
     for item in items:
         tk = (item.get("ticker") or "").strip().upper()
         key = tk if tk else f"\x00{int(item.get('alert_id') or 0)}"
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-        if len(deduped) >= limit:
-            break
+        by_ticker[key].append(item)
 
-    return jsonify(ok=True, items=deduped)
+    def _feed_pick_row(group: list[dict]) -> dict:
+        movement = [x for x in group if x.get("type") in _SCANNER_MOVEMENT_TYPES]
+        pool = movement if movement else group
+        return max(pool, key=lambda x: float(x.get("ts") or 0))
+
+    deduped = sorted(
+        (_feed_pick_row(group) for group in by_ticker.values()),
+        key=lambda x: float(x.get("ts") or 0),
+        reverse=True,
+    )[:limit]
+
+    return jsonify(
+        ok=True,
+        items=deduped,
+        day=day,
+        day_options=_feed_day_options(),
+        since_ts=since_ts,
+        until_ts=until_ts,
+    )
 
 
 @app.get("/api/ai/trades")
@@ -749,6 +968,54 @@ def api_ai_monitor(trade_id: int):
     return jsonify(ok=True, items=[dict(r) for r in rows])
 
 
+@app.get("/api/ai/trade/<int:trade_id>/ticks")
+def api_ai_trade_ticks(trade_id: int):
+    db = _ai_db()
+    limit = request.args.get("limit", type=int)
+    ticks = db.trade_ticks_for_trade(int(trade_id), limit=limit)
+    return jsonify(ok=True, trade_id=trade_id, items=ticks)
+
+
+@app.get("/api/ai/trade/<int:trade_id>/analytics")
+def api_ai_trade_analytics(trade_id: int):
+    db = _ai_db()
+    row = db.fetchone("SELECT * FROM trades WHERE id=?", (int(trade_id),))
+    if not row:
+        return jsonify(ok=False, error="trade_not_found"), 404
+    tr = dict(row)
+    exit_pct = (
+        float(tr["pnl_pct"])
+        if str(tr.get("status") or "").upper() == "CLOSED" and tr.get("pnl_pct") is not None
+        else None
+    )
+    analytics = db.trade_analytics_for_trade(int(trade_id), exit_pct=exit_pct)
+    monitor = [
+        dict(r)
+        for r in db.fetchall(
+            "SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log "
+            "WHERE trade_id=? ORDER BY ts DESC LIMIT 80",
+            (int(trade_id),),
+        )
+    ]
+    monitor.reverse()
+    try:
+        from ai_sandbox import t212_ai as _t212_ai_disp
+
+        tk = (tr.get("ticker") or "").strip()
+        if tk:
+            tr["display_ticker"] = _t212_ai_disp.display_raw_for(tk)
+    except Exception:
+        pass
+    return jsonify(
+        ok=True,
+        trade_id=trade_id,
+        status=tr.get("status"),
+        trade=tr,
+        analytics=analytics,
+        monitor=monitor,
+    )
+
+
 @app.get("/api/ai/alert/<int:alert_id>")
 def api_ai_alert(alert_id: int):
     """Full breakdown for one scanner alert: parsed payload, grader state,
@@ -768,40 +1035,116 @@ def api_ai_alert(alert_id: int):
     )
     score = dict(score_row) if score_row else None
     ai_decisions = db.ai_decisions_for_alert(alert_id)
+    cfg = _ai_config()
+    tk = (a.get("ticker") or "").strip().upper()
+    alert_history: list = []
+    ai_reviews: list = []
+    if tk:
+        day0 = cfg.uk_day_start_ts(float(a.get("ts") or 0))
+        alert_history = db.movement_alerts_for_ticker_day(tk, since_ts=day0)
+        ai_reviews = db.ai_decisions_for_ticker_day(tk, since_ts=day0)
+        closed_trades = db.closed_trades_for_ticker_day(tk, since_ts=day0)
+        alert_by_id = {
+            int(h.get("alert_id")): h
+            for h in alert_history
+            if h.get("alert_id") is not None
+        }
+        prev_review_price: float | None = None
+        for rev in ai_reviews:
+            rev_ts = float(rev.get("ts") or 0)
+            aid = rev.get("alert_id")
+            hist = alert_by_id.get(int(aid)) if aid is not None else None
+            price = None
+            pct_since_prior = None
+            if hist:
+                price = hist.get("price")
+                pct_since_prior = hist.get("pct_since_prior")
+                rev["scanner_rank"] = hist.get("rank") or hist.get("sequence")
+            elif rev.get("entry_price") is not None:
+                price = rev.get("entry_price")
+            if price is not None and prev_review_price is not None and prev_review_price > 0:
+                if pct_since_prior is None:
+                    pct_since_prior = round(
+                        (float(price) - prev_review_price) / prev_review_price * 100.0,
+                        1,
+                    )
+            rev["review_price"] = price
+            rev["pct_since_prior"] = pct_since_prior
+            prior_closed = [
+                t for t in closed_trades
+                if float(t.get("exit_ts") or 0) < rev_ts
+            ]
+            rev["grading_episode"] = len(prior_closed) + 1
+            rev["is_reentry"] = len(prior_closed) > 0
+            ep_num = int(rev.get("alert_number") or 0)
+            scanner = rev.get("scanner_rank")
+            parts = [f"#{ep_num}"]
+            if scanner:
+                parts.append(f"scanner #{scanner}")
+            if rev["is_reentry"]:
+                parts.append("re-entry")
+            rev["review_label"] = " · ".join(parts)
+            if price is not None:
+                prev_review_price = float(price)
     grader = _grader_drawer_context(db, {**a, "id": alert_id})
+    if alert_history:
+        grader["alert_count"] = max(int(grader.get("alert_count") or 0), len(alert_history))
     trade_row = None
     monitor: list = []
-    if score:
+    trade_analytics = None
+    trade_row = db.fetchone(
+        "SELECT * FROM trades WHERE alert_id=? ORDER BY id DESC LIMIT 1",
+        (alert_id,),
+    )
+    if not trade_row and tk:
+        try:
+            from ai_sandbox import t212_ai as _t212_ai_disp
+
+            t212_code = _t212_ai_disp.resolve_ticker(tk) or tk.upper()
+        except Exception:
+            t212_code = tk.upper()
         trade_row = db.fetchone(
             "SELECT * FROM trades WHERE ticker=? AND open_ts>=? ORDER BY open_ts DESC LIMIT 1",
-            (a["ticker"], a["ts"] - 60),
+            (t212_code, float(a.get("ts") or 0) - 60),
         )
-        if trade_row:
-            tr = dict(trade_row)
-            try:
-                from ai_sandbox import t212_ai as _t212_ai_disp
+        if not trade_row:
+            trade_row = db.fetchone(
+                "SELECT * FROM trades WHERE ticker=? ORDER BY open_ts DESC LIMIT 1",
+                (t212_code,),
+            )
+    if trade_row:
+        tr = dict(trade_row)
+        try:
+            from ai_sandbox import t212_ai as _t212_ai_disp
 
-                tk = (tr.get("ticker") or "").strip()
-                if tk:
-                    tr["display_ticker"] = _t212_ai_disp.display_raw_for(tk)
-            except Exception:
-                pass
-            trade_row = tr
-            monitor = [
-                dict(r)
-                for r in db.fetchall(
-                    "SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log WHERE trade_id=? ORDER BY ts",
-                    (trade_row["id"],),
-                )
-            ]
+            tkt = (tr.get("ticker") or "").strip()
+            if tkt:
+                tr["display_ticker"] = _t212_ai_disp.display_raw_for(tkt)
+        except Exception:
+            pass
+        trade_row = tr
+        monitor = [
+            dict(r)
+            for r in db.fetchall(
+                "SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log WHERE trade_id=? ORDER BY ts",
+                (trade_row["id"],),
+            )
+        ]
+        try:
+            trade_analytics = db.trade_analytics_for_trade(int(trade_row["id"]))
+        except Exception as exc:
+            _log.debug("alert trade_analytics failed id=%s: %s", trade_row.get("id"), exc)
     return jsonify(
         ok=True,
         alert=a,
         score=score,
         grader=grader,
         ai_decisions=ai_decisions,
+        ai_reviews=ai_reviews,
+        alert_history=alert_history,
         trade=trade_row if trade_row else None,
         monitor=monitor,
+        trade_analytics=trade_analytics,
     )
 
 
@@ -906,7 +1249,7 @@ def api_ai_watch_history():
                   COALESCE(h.updated_ts, h.ended_ts) AS updated_ts_ord,
                   h.reason, h.reviews,
                   h.initial_score, h.peak_score, h.final_score, h.final_decision,
-                  h.final_reason, h.trade_id, h.alert_id, h.episode_type,
+                  h.final_reason, h.trade_id, h.alert_id, h.episode_type, h.audit_json,
                   t.status            AS trade_status,
                   t.ticker            AS trade_instrument,
                   t.t212_error        AS trade_t212_error,
@@ -928,9 +1271,22 @@ def api_ai_watch_history():
                   )
             ORDER BY updated_ts_ord DESC
             LIMIT ?""",
-        (limit,),
+        (limit * 3,),
     )
-    items = [dict(r) for r in rows]
+    items = []
+    for r in rows:
+        d = dict(r)
+        if not db.watch_history_counts_for_ai_history(
+            reason=d.get("reason"),
+            episode_type=d.get("episode_type"),
+            alert_id=d.get("alert_id"),
+            audit_json=d.get("audit_json"),
+        ):
+            continue
+        d.pop("audit_json", None)
+        items.append(d)
+        if len(items) >= limit:
+            break
     try:
         from ai_sandbox import t212_ai as _t212_ai_disp
 
@@ -1055,9 +1411,38 @@ def api_ai_watch_history_detail(hist_id: int):
             "entry_pattern": rj.get("entry_pattern"),
             "risk_flags": rj.get("risk_flags") or [],
         })
-    is_live = h.get("reason") == "WATCH_ACTIVE" or (
-        h.get("ended_ts") is not None and float(h["ended_ts"]) <= 0
+    trade_st = str(h.get("trade_status") or "").upper()
+    is_live = (
+        h.get("reason") == "WATCH_ACTIVE"
+        or (h.get("ended_ts") is not None and float(h["ended_ts"]) <= 0)
+        or (
+            h.get("reason") == "TRADE_OPEN"
+            and trade_st in ("OPEN", "SELL_PENDING")
+        )
     )
+    trade_analytics = None
+    trade_monitor: list = []
+    if h.get("trade_id") and (h.get("episode_type") or "WATCH") == "TRADE":
+        tid = int(h["trade_id"])
+        if h.get("audit") and isinstance(h["audit"], dict) and h["audit"].get("trade_analytics"):
+            trade_analytics = h["audit"]["trade_analytics"]
+        else:
+            try:
+                exit_pct = float(h["trade_pnl_pct"]) if h.get("trade_pnl_pct") is not None else None
+                trade_analytics = db.trade_analytics_for_trade(tid, exit_pct=exit_pct)
+            except Exception as exc:
+                _log.debug("trade_analytics detail failed id=%s: %s", tid, exc)
+        try:
+            trade_monitor = [
+                dict(r)
+                for r in db.fetchall(
+                    "SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log "
+                    "WHERE trade_id=? ORDER BY ts ASC",
+                    (tid,),
+                )
+            ]
+        except Exception as exc:
+            _log.debug("trade_monitor detail failed id=%s: %s", tid, exc)
     return jsonify(
         ok=True,
         watch=h,
@@ -1067,6 +1452,8 @@ def api_ai_watch_history_detail(hist_id: int):
         watch_period=watch_period,
         watch_period_scores=wp_scores,
         is_live=is_live,
+        trade_analytics=trade_analytics,
+        trade_monitor=trade_monitor,
     )
 
 
