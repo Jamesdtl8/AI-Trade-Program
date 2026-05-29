@@ -21,13 +21,38 @@ StateMeaningOPENPosition entered, monitoring P&L, trail not yet activeTRAIL_ARME
 
 Trailing Stop Ladder
 The trail percentage widens as the move extends to give the position room to breathe at higher gain levels. Volatile momentum stocks regularly pull back 15–25% intraday even during strong uptrends. A fixed tight trail would exit prematurely on normal consolidation.
-The trail is calculated against highest_price_seen — the peak price observed since entry. It never moves down. When a new high is reached, the stop updates upward. When price falls, the stop holds at its current level until breached.
-Gain from entryTrail % below highest seenStop calculationBelow +7.5%Hard stop onlyentry × 0.85+7.5% to +10%7.5% trailhighest × 0.925+10% to +20%10% trailhighest × 0.90+20% to +40%10% trailhighest × 0.90+40% to +60%15% trailhighest × 0.85+60% to +100%20% trailhighest × 0.80+100% to +150%25% trailhighest × 0.75+150% to +200%30% trailhighest × 0.70+200% to +300%35% trailhighest × 0.65+300% and above40% trailhighest × 0.60
-Hard stop: Always active regardless of trail state. Entry × 0.85. If price falls 15% below entry before trail activates, exit immediately. This is a loss protection floor, not a trail.
-Trail activation: Trail becomes active when price first reaches entry × 1.075 (+7.5%). Before that point only the hard stop applies.
-Example — ASTC entry $4.15:
-PriceGainTrail activeTrail %Stop level$3.53-15%NoHard stopExit$4.46+7.5%Yes — activates7.5%$4.13$4.57+10%Yes10%$4.11$4.98+20%Yes10%$4.48$5.81+40%Yes15%$4.94$6.64+60%Yes20%$5.31$8.30+100%Yes25%$6.23$10.38+150%Yes30%$7.26$12.45+200%Yes35%$8.09$17.99+333%Yes40%$10.79
-At the $17.99 high, the stop would be sitting at $10.79. When the stock reverses and trades through $10.79 the position exits. This captures the majority of a 333% move versus the original 7.5% fixed target of $4.46.
+The trail is calculated against highest_price_seen — the peak price observed since entry. It NEVER moves down. When a new high is reached, the stop updates upward. When price falls, the stop holds at its current level until breached. Additionally, the stop level itself can never decrease when crossing into a new tier (the running highest_stop is tracked and enforced).
+
+ACTUAL VALUES (trail_stop.py — last updated 2026-05-29):
+Gain from entry (peak) | Trail % below peak | Effective stop example ($4.00 entry)
+Below +7.5%            | Hard stop only      | $3.60 (entry × 0.90)
++7.5% to +10%          | 5% trail            | arm at $4.30, stop = $4.30 × 0.95 = $4.09
++10% to +20%           | 7% trail            | peak $4.40, stop = $4.40 × 0.93 = $4.09
++20% to +40%           | 10% trail           | peak $4.80, stop = $4.80 × 0.90 = $4.32
++40% to +60%           | 15% trail           | peak $5.60, stop = $5.60 × 0.85 = $4.76
++60% to +100%          | 20% trail           | peak $6.40, stop = $6.40 × 0.80 = $5.12
++100% to +150%         | 25% trail           | peak $8.00, stop = $8.00 × 0.75 = $6.00
++150% to +200%         | 30% trail           | peak $10.00, stop = $10.00 × 0.70 = $7.00
++200% to +300%         | 35% trail           | peak $12.00, stop = $12.00 × 0.65 = $7.80
++300% and above        | 40% trail           | peak $16.00, stop = $16.00 × 0.60 = $9.60
+
+Hard stop: Always active regardless of trail state. Entry × 0.90 (−10%). The hard stop provides the absolute floor — if price falls 10% below entry before trail activates, exit immediately.
+Trail activation: Trail becomes active permanently once peak gain reaches +7.5% (entry × 1.075). Before that, only the hard stop applies. Once armed, the trail stays armed even if price drops back below +7.5%.
+Stop continuity: The stop level is tracked as a running maximum (highest_stop). When a tier boundary is crossed (e.g. from +9.9% to +10%), the wider trail percentage could mathematically lower the stop level — this is prevented by always using max(new_calc, highest_stop_seen). The stop can only go up, never down.
+
+Example — entry $4.00, stock runs to +333% peak ($17.32):
+Price   | Gain  | Trail active | Trail % | Stop level
+$3.60   | -10%  | No           | hard    | $3.60 → EXIT
+$4.30   | +7.5% | YES — armed  | 5%      | $4.09
+$4.40   | +10%  | Yes          | 7%      | $4.09 (highest_stop held)
+$4.80   | +20%  | Yes          | 10%     | $4.32
+$5.60   | +40%  | Yes          | 15%     | $4.76
+$6.40   | +60%  | Yes          | 20%     | $5.12
+$8.00   | +100% | Yes          | 25%     | $6.00
+$10.00  | +150% | Yes          | 30%     | $7.00
+$17.32  | +333% | Yes          | 40%     | $10.39
+
+At the $17.32 high, stop sits at $10.39. When price reverses through $10.39 the position exits, capturing the majority of the 333% move.
 
 Data Model
 Table: ticker_states

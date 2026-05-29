@@ -7,13 +7,13 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from .. import config, db, human_labels
-from . import hard_rules, messages, openai_grader, state as ticker_state
+from .. import config, db
+from . import hard_rules, messages, llm_grader, postprocess, state as ticker_state
 
 _log = logging.getLogger("ai_sandbox.grader.processor")
 
 
-def _alert_snapshot(alert: dict[str, Any], *, ts: float | None = None) -> dict[str, Any]:
+def alert_snapshot(alert: dict[str, Any], *, ts: float | None = None) -> dict[str, Any]:
     when = alert.get("discord_ts") or alert.get("ts") or ts or time.time()
     if isinstance(when, (int, float)):
         iso = datetime.fromtimestamp(float(when), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
@@ -41,6 +41,7 @@ def _alert_snapshot(alert: dict[str, Any], *, ts: float | None = None) -> dict[s
         "timestamp": iso,
         "float_shares": alert.get("float"),
         "market_cap": alert.get("market_cap"),
+        "reverse_split": alert.get("reverse_split"),
     }
 
 
@@ -63,108 +64,25 @@ def _decision_payload(result: dict[str, Any], *, reason: str) -> dict[str, Any]:
     }
 
 
-async def process_scanner_alert(
+def _apply_grader_result(
     *,
-    ticker: str,
-    alert: dict[str, Any],
+    tk: str,
+    alerts: list[dict[str, Any]],
     alert_id: int,
+    result: dict[str, Any],
+    why: str,
+    st_row: dict[str, Any],
     recent_entry: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Run New System grader path. Mutates recent_entry; returns decision dict if scored."""
-    tk = ticker.upper()
-    st_row = ticker_state.get_or_create(tk)
-    st = str(st_row.get("state") or "NEW")
-
-    if st in ("TRADE", "PASS", "DISQUALIFIED"):
-        recent_entry["grader_state"] = st
-        recent_entry["active_label"] = ticker_state.ui_label(st_row)
-        return None
-
-    eliminated, reason = hard_rules.hard_disqualify(alert)
-    if eliminated:
-        ticker_state.update(
-            tk,
-            {"state": "DISQUALIFIED", "disqualify_reason": reason},
-        )
-        recent_entry["disqualify_reason"] = reason
-        recent_entry["grader_state"] = "DISQUALIFIED"
-        recent_entry["active_label"] = "FILTERED"
-        db.watch_episode_ensure_open(
-            tk,
-            alert_id=alert_id,
-            added_ts=time.time(),
-            event={
-                "kind": "disqualified",
-                "ts": time.time(),
-                "reason": human_labels.humanize(reason),
-                "alert_id": alert_id,
-            },
-        )
-        return None
-
-    alerts = list(st_row.get("alerts") or [])
-    alerts.append(_alert_snapshot(alert))
-    float_val = alert.get("float") or st_row.get("float_shares")
-    next_state = "WATCHING" if st == "NEW" else st
-    ticker_state.update(
-        tk,
-        {
-            "state": next_state,
-            "alerts": alerts,
-            "float_shares": float_val,
-        },
-    )
-    st_row = ticker_state.get_or_create(tk)
-    recent_entry["grader_state"] = st_row.get("state")
-    recent_entry["active_label"] = ticker_state.ui_label(st_row)
-
-    if alert.get("source") == "news_tester":
-        ready, why = True, "news_tester_force"
-    else:
-        ready, why = hard_rules.should_send_to_ai(st_row, alert)
-    if not ready:
-        recent_entry["defer_reason"] = why
-        try:
-            db.watch_episode_ensure_open(
-                tk,
-                alert_id=alert_id,
-                added_ts=time.time(),
-                event={
-                    "kind": "accumulating",
-                    "ts": time.time(),
-                    "alert_id": alert_id,
-                    "alert_number": len(st_row.get("alerts") or []),
-                    "defer_code": why,
-                    "reason": human_labels.humanize(why),
-                },
-            )
-        except Exception:
-            _log.exception("watch_episode accumulating log failed for %s", tk)
-        return None
-
-    ticker_state.update(tk, {"state": "PENDING_AI"})
-    recent_entry["grader_state"] = "PENDING_AI"
-    recent_entry["active_label"] = "REVIEW"
-
-    try:
-        result, latency_ms, cost_gbp = await openai_grader.grade_alert(st_row)
-    except Exception as exc:
-        _log.exception("AI grader failed %s", tk)
-        back = str(st_row.get("state") or "WATCHING")
-        ticker_state.update(tk, {"state": back})
-        st_row = ticker_state.get_or_create(tk)
-        recent_entry["grader_state"] = st_row.get("state")
-        recent_entry["active_label"] = ticker_state.ui_label(st_row)
-        return None
-
-    if not result:
-        ticker_state.update(tk, {"state": "WATCHING"})
-        st_row = ticker_state.get_or_create(tk)
-        recent_entry["grader_state"] = "WATCHING"
-        recent_entry["active_label"] = ticker_state.ui_label(st_row)
-        return None
-
+    latency_ms: int = 0,
+    cost_gbp: float = 0.0,
+) -> dict[str, Any]:
     user_message = messages.build_user_message(st_row)
+    from .ai_reasoning import clamp_summary_text, finalize_reasoning
+
+    result = dict(result)
+    result["reasoning"] = finalize_reasoning(result)
+    if result.get("summary"):
+        result["summary"] = clamp_summary_text(str(result["summary"]))
     db.ai_decision_insert(
         ticker=tk,
         alert_number=len(alerts),
@@ -225,10 +143,175 @@ async def process_scanner_alert(
         recent_entry["disqualify_reason"] = "ai_pass"
 
     recent_entry["score"] = decision.get("score")
-    db.log_score(
-        alert_id,
-        tk,
-        decision,
-        thinking_used=False,
-    )
+    db.log_score(alert_id, tk, decision, thinking_used=False)
     return decision
+
+
+async def _run_openai_grade(
+    tk: str,
+    st_row: dict[str, Any],
+    alerts: list[dict[str, Any]],
+    alert_id: int,
+    recent_entry: dict[str, Any],
+    why: str,
+) -> dict[str, Any] | None:
+    ticker_state.update(tk, {"state": "PENDING_AI"})
+    recent_entry["grader_state"] = "PENDING_AI"
+    recent_entry["active_label"] = "REVIEW"
+
+    try:
+        result, latency_ms, cost_gbp = await llm_grader.grade_alert(st_row)
+    except Exception:
+        _log.exception("AI grader failed %s", tk)
+        back = "WATCHING"
+        ticker_state.update(tk, {"state": back})
+        st_row = ticker_state.get_or_create(tk)
+        recent_entry["grader_state"] = st_row.get("state")
+        recent_entry["active_label"] = ticker_state.ui_label(st_row)
+        return None
+
+    _log.info(
+        "AI grader %s ticker=%s latency_ms=%s cost_gbp=%.4f",
+        config.grader_model(),
+        tk,
+        latency_ms,
+        cost_gbp,
+    )
+
+    if not result:
+        ticker_state.update(tk, {"state": "WATCHING"})
+        st_row = ticker_state.get_or_create(tk)
+        recent_entry["grader_state"] = "WATCHING"
+        recent_entry["active_label"] = "WATCHING"
+        return None
+
+    st_row = ticker_state.get_or_create(tk)
+    result = postprocess.apply_rules(st_row, result)
+    return _apply_grader_result(
+        tk=tk,
+        alerts=alerts,
+        alert_id=alert_id,
+        result=result,
+        why=why,
+        st_row=st_row,
+        recent_entry=recent_entry,
+        latency_ms=latency_ms,
+        cost_gbp=cost_gbp,
+    )
+
+
+async def process_scanner_alert(
+    *,
+    ticker: str,
+    alert: dict[str, Any],
+    alert_id: int,
+    recent_entry: dict[str, Any],
+    skip_append: bool = False,
+) -> dict[str, Any] | None:
+    """Run New System grader path. Mutates recent_entry; returns decision dict if scored."""
+    tk = ticker.upper()
+    st_row = ticker_state.get_or_create(tk)
+    st = str(st_row.get("state") or "NEW")
+    disqual = st_row.get("disqualify_reason")
+
+    if st == "PENDING_AI":
+        age = time.time() - float(st_row.get("updated_ts") or 0)
+        if age < ticker_state._GRADER_IN_FLIGHT_SEC:
+            recent_entry["grader_state"] = st
+            recent_entry["active_label"] = ticker_state.ui_label(st_row)
+            recent_entry["defer_reason"] = "grader_in_flight"
+            return None
+        ticker_state.update(tk, {"state": "WATCH"})
+        st_row = ticker_state.get_or_create(tk)
+        st = "WATCH"
+
+    if st == "TRADE":
+        from .. import ticker_identity
+
+        match_sql, match_params = ticker_identity.trades_ticker_where_clause(tk)
+        # Include SELL_PENDING: a sell order in flight is still an active position.
+        # Without this, the grader resets to NEW with no reentry_active while the
+        # broker exit is still confirming — bypassing all reentry guards entirely.
+        open_row = db.fetchone(
+            f"""SELECT id FROM trades
+                WHERE status IN ('OPEN', 'SELL_PENDING')
+                  AND {match_sql}
+                LIMIT 1""",
+            match_params,
+        )
+        if open_row:
+            recent_entry["grader_state"] = st
+            recent_entry["active_label"] = ticker_state.ui_label(st_row)
+            recent_entry["defer_reason"] = "sell_in_flight"
+            return None
+        ticker_state.mark_traded(tk)
+        ticker_state.reset_traded_for_new_alert(tk)
+        st_row = ticker_state.get_or_create(tk)
+        st = "NEW"
+
+    if st == "TRADED":
+        ticker_state.reset_traded_for_new_alert(tk)
+        st_row = ticker_state.get_or_create(tk)
+        st = "NEW"
+
+    if hard_rules.is_nbreak_event(alert):
+        recent_entry["grader_state"] = st
+        recent_entry["active_label"] = "FILTERED"
+        recent_entry["disqualify_reason"] = "nbreak_skip"
+        recent_entry["defer_reason"] = "nbreak_skip"
+        return None
+
+    if st == "DISQUALIFIED":
+        prior = list(st_row.get("alerts") or [])
+        probe = prior + [alert_snapshot(alert)]
+        if hard_rules.is_recoverable_disqualify(disqual) and hard_rules.label_ok_for_grade(
+            alert, probe
+        ):
+            ticker_state.update(tk, {"state": "WATCHING", "disqualify_reason": None})
+            st_row = ticker_state.get_or_create(tk)
+            st = "WATCHING"
+        else:
+            recent_entry["grader_state"] = st
+            recent_entry["active_label"] = ticker_state.ui_label(st_row)
+            return None
+
+    eliminated, reason = hard_rules.hard_disqualify(alert)
+    if eliminated:
+        ticker_state.update(
+            tk,
+            {"state": "DISQUALIFIED", "disqualify_reason": reason},
+        )
+        recent_entry["disqualify_reason"] = reason
+        recent_entry["grader_state"] = "DISQUALIFIED"
+        recent_entry["active_label"] = "FILTERED"
+        return None
+
+    if skip_append:
+        alerts = list(st_row.get("alerts") or [])
+    else:
+        alerts = list(st_row.get("alerts") or [])
+        alerts.append(alert_snapshot(alert))
+        float_val = alert.get("float") or st_row.get("float_shares")
+        next_state = "WATCHING" if st in ("NEW", "PASS") else st
+        ticker_state.update(
+            tk,
+            {
+                "state": next_state,
+                "alerts": alerts,
+                "float_shares": float_val,
+            },
+        )
+        st_row = ticker_state.get_or_create(tk)
+
+    recent_entry["grader_state"] = st_row.get("state")
+    recent_entry["active_label"] = ticker_state.ui_label(st_row)
+
+    if alert.get("source") == "news_tester":
+        ready, why = True, "news_tester_force"
+    else:
+        ready, why = hard_rules.should_send_to_ai(st_row, alert)
+    if not ready:
+        recent_entry["defer_reason"] = why
+        return None
+
+    return await _run_openai_grade(tk, st_row, alerts, alert_id, recent_entry, why)

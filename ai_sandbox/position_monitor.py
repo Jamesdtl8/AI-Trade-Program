@@ -21,6 +21,46 @@ from .slot_manager import Slot, SlotManager
 _log = logging.getLogger("ai_sandbox.position_monitor")
 
 
+def _trade_open_ts(trade_id: int, setup: dict[str, Any]) -> float:
+    cached = float(setup.get("open_ts") or 0.0)
+    if cached > 0:
+        return cached
+    row = db.fetchone("SELECT open_ts FROM trades WHERE id=?", (int(trade_id),))
+    open_ts = float(row["open_ts"] or time.time()) if row else time.time()
+    setup["open_ts"] = open_ts
+    return open_ts
+
+
+def _append_trade_tick(
+    trade_id: int,
+    setup: dict[str, Any],
+    *,
+    entry: float,
+    price: float,
+    unreal_pct: float | None,
+) -> None:
+    try:
+        open_ts = _trade_open_ts(trade_id, setup)
+        unreal_gbp: float | None = None
+        qty = float(setup.get("quantity") or 0.0)
+        if qty <= 0:
+            row = db.fetchone("SELECT quantity FROM trades WHERE id=?", (int(trade_id),))
+            if row and row["quantity"] is not None:
+                qty = float(row["quantity"] or 0.0)
+                setup["quantity"] = qty
+        if qty > 0 and entry > 0:
+            unreal_gbp = round(config.usd_notionals_to_gbp(qty * (price - entry)), 4)
+        db.trade_tick_append(
+            int(trade_id),
+            open_ts=open_ts,
+            price=price,
+            unreal_pct=unreal_pct,
+            unreal_gbp=unreal_gbp,
+        )
+    except Exception:
+        _log.debug("trade_tick_append failed trade_id=%s", trade_id)
+
+
 def _paper_mode() -> bool:
     return not config.trading_enabled() or not config.t212_credentials_ok()
 
@@ -152,6 +192,15 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
     tp = float(setup["tp"])
     stop_loss_pct = float(config.MAX_STOP_LOSS_PCT)
     highest = float(setup.get("highest_price") or entry)
+    if slot.trade_id:
+        stored = db.trade_peak_price(int(slot.trade_id))
+        if stored is not None and stored > highest:
+            highest = stored
+            setup["highest_price"] = highest
+    # Track the highest stop level seen so far — the stop can never go backward.
+    # Without this, tier-boundary crossings (e.g. +9.99% → +10%) widen the trail
+    # pct, which would drop the stop level despite peak price going up.
+    highest_stop: float = float(setup.get("highest_stop") or 0.0)
 
     while True:
         try:
@@ -170,6 +219,24 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                     if trade_id:
                         await _try_confirm_close_from_broker(int(trade_id), ticker)
                     return
+                if trade_id and not _paper_mode():
+                    pos_row = await t212_ai.position_row_for_ticker(ticker, bypass_cache=False)
+                    if pos_row:
+                        try:
+                            px = float(pos_row.get("currentPrice") or entry or 0.0)
+                        except (TypeError, ValueError):
+                            px = entry
+                        upct = await t212_ai.position_unrealized_pct(ticker, bypass_cache=False)
+                        if upct is None and entry > 0 and px > 0:
+                            upct = (px - entry) / entry * 100.0
+                        if upct is not None:
+                            _append_trade_tick(
+                                int(trade_id),
+                                setup,
+                                entry=entry,
+                                price=px,
+                                unreal_pct=float(upct),
+                            )
                 if trade_id:
                     await _try_confirm_close_from_broker(int(trade_id), ticker)
                 continue
@@ -181,7 +248,17 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
 
             broker_entry = await t212_ai.position_average_entry_usd(ticker, bypass_cache=False)
             if broker_entry is not None and broker_entry > 0:
-                entry = round(float(broker_entry), 6)
+                new_entry = round(float(broker_entry), 6)
+                if abs(new_entry - entry) > 0.01 and entry > 0:
+                    # Broker is reporting a materially different average entry — log it
+                    # so we can audit trail arm-point drift (the trail arm level shifts
+                    # with a different entry, which can cause unexpected exits).
+                    _log.debug(
+                        "broker entry drift %s: DB=%.4f broker=%.4f diff=%.4f (trail arm was %.4f → now %.4f)",
+                        ticker, entry, new_entry, new_entry - entry,
+                        entry * 1.075, new_entry * 1.075,
+                    )
+                entry = new_entry
 
             pos_row = await t212_ai.position_row_for_ticker(ticker, bypass_cache=False)
             if pos_row:
@@ -200,12 +277,21 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                 if price > highest:
                     highest = price
                     setup["highest_price"] = highest
+                    if slot.trade_id:
+                        try:
+                            db.trade_update_peak_price(int(slot.trade_id), highest)
+                        except Exception:
+                            pass
                 stop_level, trail_active, trail_pct = trail_stop.calculate_stop(
                     entry,
                     highest,
                     float(unreal_pct),
                     hard_stop_pct=stop_loss_pct,
+                    highest_stop=highest_stop,
                 )
+                if trail_active and stop_level > highest_stop:
+                    highest_stop = stop_level
+                    setup["highest_stop"] = highest_stop
                 trail_note = (
                     f" trail={trail_pct}% stop={stop_level:.4f}"
                     if trail_active
@@ -217,9 +303,31 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                     unreal_pct,
                     f"pnl={unreal_pct:.2f}%{trail_note}",
                 )
+                if slot.trade_id:
+                    _append_trade_tick(
+                        int(slot.trade_id),
+                        setup,
+                        entry=entry,
+                        price=price,
+                        unreal_pct=float(unreal_pct),
+                    )
+                    last_log = float(setup.get("last_monitor_log_ts") or 0.0)
+                    if time.time() - last_log >= 30.0:
+                        try:
+                            db.monitor_log_append(
+                                int(slot.trade_id),
+                                price=price,
+                                unreal_pct=float(unreal_pct),
+                                decision=slot.last_decision,
+                            )
+                            setup["last_monitor_log_ts"] = time.time()
+                        except Exception:
+                            pass
             else:
                 stop_level, trail_active, trail_pct = trail_stop.calculate_stop(
-                    entry, highest, 0.0, hard_stop_pct=stop_loss_pct
+                    entry, highest, 0.0,
+                    hard_stop_pct=stop_loss_pct,
+                    highest_stop=highest_stop,
                 )
 
             stop_grace_until = float(setup.get("stop_grace_until") or 0.0)
@@ -246,7 +354,7 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                     continue
                 return
 
-            # Trailing stop ladder (activates from +7.5%).
+            # Trailing stop ladder (arms permanently on first +7.5% peak; tier from peak gain).
             if (
                 not _paper_mode()
                 and trail_active
@@ -254,18 +362,25 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                 and price <= stop_level
                 and not (stop_grace_until > 0 and time.time() < stop_grace_until)
             ):
+                peak_g = trail_stop.peak_gain_pct(entry, highest)
+                trail_reason = (
+                    f"trail_breach_{trail_pct:.0f}pct"
+                    f"_peak{peak_g:.1f}pct"
+                )
                 if await _send_market_sell(
                     slot,
                     mgr,
                     ticker,
                     price,
-                    "trail_breach",
+                    trail_reason,
                     audit_extra={
                         "unreal_pct": unreal_pct,
                         "trail_pct": trail_pct,
                         "stop_level": stop_level,
                         "highest_price": highest,
+                        "highest_stop": highest_stop,
                         "broker_entry": entry,
+                        "peak_gain_pct": peak_g,
                     },
                 ):
                     continue
