@@ -178,7 +178,7 @@ def clear_stale_pending_ai() -> int:
 
     Returns the number of tickers that were unstuck.
     """
-    today = config.uk_date_iso()
+    today = ticker_state.uk_date_iso()
     stale_rows = db.fetchall(
         """SELECT ticker, updated_ts, state FROM ticker_states
             WHERE date=? AND state='PENDING_AI'""",
