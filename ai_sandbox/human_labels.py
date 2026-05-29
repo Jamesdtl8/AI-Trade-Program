@@ -52,6 +52,7 @@ _LABELS: dict[str, str] = {
     "watch_momentum_regrade": "WATCH — strong momentum regrade triggered",
     "alert_2_rv_too_low": "Alert 2 deferred — RV below 50x (not enough momentum yet)",
     "g2_partial_g3_weak_cap": "Capped at WATCH — no named news + weak squeeze structure",
+    "extreme_rv_no_news_scalp": "Momentum scalp override — extreme RV + strong squeeze, no news needed",
     "news_tester_force": "News tester — forced GPT grade",
     "negative_news": "Skipped — negative news headline",
     "not_on_t212": "Filtered — not on Trading 212",

@@ -57,6 +57,9 @@ PARTIAL: Known Runner only — does not count toward PASS_STRONG threshold
 FAIL: none present
 Gate 3 FAIL alone must NOT block TRADE when NEWS MOMENTUM OVERRIDE applies (below).
 
+EXTREME MOMENTUM SCALP OVERRIDE (alerts 3+, post-processing enforced)
+When Gate 2=FAIL (no news) BUT Gate 1=PASS_STRONG AND Gate 3=PASS_STRONG AND Gate 4=PASS AND peak RV ≥500x AND price has moved ≥20% from alert-1 price → Python post-processing will force grade=STRONG, action=TRADE regardless of your output. You do NOT need to wait for named news in this scenario. The extreme RV and structural squeeze together ARE the signal. Grade STRONG/TRADE proactively when these conditions are met — do not hold at WATCH and let post-processing do all the work.
+
 NEWS MOMENTUM OVERRIDE (alerts 3+)
 When float is tight (Gate 1 PASS_STRONG or float under 5M) AND Gate 2 is PASS with a named news catalyst AND Gate 4 is PASS AND current RV is at least 90x AND the last 2 alerts are consecutive rising MOMENTUM/BREAKOUT → grade STRONG and action TRADE even if Gate 3 is FAIL (no 0 Borrow / Reg SHO / squeeze flags). R/S 1:20 or less does not block. Enter at alert 3 when criteria are met — do not wait for alert 4, 5, or 6.
 

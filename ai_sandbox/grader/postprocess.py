@@ -22,6 +22,13 @@ TIGHT_FLOAT_MAX = 5_000_000
 ALERT_2_RV_MIN = 50.0
 ALERT_2_MAX_GAP_SEC = 900.0
 ALERT_2_FLOAT_MAX = 5_000_000
+
+# Extreme momentum scalp thresholds (no-news override).
+# When RV hits extreme levels and price has moved significantly from alert-1,
+# the price action itself is the catalyst — we don't need named news for a 7.5% scalp.
+EXTREME_RV_SCALP_THRESHOLD = 500.0   # RV must be ≥500x at any point in the sequence
+EXTREME_RV_SCALP_PRICE_MOVE = 20.0   # price must be ≥20% above alert-1 price
+EXTREME_RV_SCALP_MIN_ALERTS = 3      # at least 3 alerts (build-up required)
 _NEWS_SKIP = frozenset({"none", "same", "n/a", "-", ""})
 
 
@@ -559,6 +566,48 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
         ctx["grade_change_history"] = history
         grade = "WATCH"
         action = "MONITOR"
+
+    # Extreme momentum scalp override: no named news (Gate 2=FAIL) but extreme RV
+    # + strong structure on Gates 1, 3 and 4.
+    # When something moves 20%+ from its first alert AND is at 500x+ RV with a strong
+    # structural squeeze, the price action IS the catalyst — we don't need a news headline
+    # to justify a 7.5% scalp.  This is the CDT pattern: G2=FAIL but rv=2654x and
+    # price moved +70% from alert 1.  Only fires on alert 3+ (must have a build-up).
+    _rv_seq = ctx.get("rv_sequence") or []
+    _px_seq = ctx.get("price_sequence") or []
+    _peak_rv = max(_rv_seq) if _rv_seq else 0.0
+    _first_px = float(_px_seq[0]) if _px_seq else 0.0
+    _cur_px = float(_px_seq[-1]) if _px_seq else 0.0
+    _px_move_pct = ((_cur_px - _first_px) / _first_px * 100) if _first_px > 0 else 0.0
+    if (
+        action in ("MONITOR", "WATCH")
+        and not kr_override
+        and str(gates.get("gate_2") or "").upper() == "FAIL"
+        and _gate_passes(gates.get("gate_1"), require_strong=True)
+        and _gate_passes(gates.get("gate_3"), require_strong=True)
+        and _gate_passes(gates.get("gate_4"))
+        and _peak_rv >= EXTREME_RV_SCALP_THRESHOLD
+        and _px_move_pct >= EXTREME_RV_SCALP_PRICE_MOVE
+        and alert_count >= EXTREME_RV_SCALP_MIN_ALERTS
+    ):
+        scalp_note = (
+            f"Extreme momentum scalp: peak RV {_peak_rv:.0f}x, "
+            f"+{_px_move_pct:.0f}% from alert-1 — G1+G3+G4 pass, "
+            "price action is the catalyst"
+        )
+        if scalp_note not in flags:
+            flags.append(scalp_note)
+        history = list(ctx.get("grade_change_history") or [])
+        history.append(
+            {
+                "from": grade,
+                "to": "STRONG",
+                "reason": "extreme_rv_no_news_scalp",
+            }
+        )
+        ctx["grade_change_history"] = history
+        grade = "STRONG"
+        action = "TRADE"
 
     # The alert-2 dual-MOMENTUM guard applies to ALL alert-2 TRADE decisions,
     # including reentry episodes. A reentry at alert 2 has even less track record
