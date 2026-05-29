@@ -201,6 +201,8 @@ class Engine:
         else:
             _log.warning("positions cache empty after startup wait — resume deferred to reconciler")
 
+        asyncio.create_task(self._grader_backfill_loop(), name="ai-grader-backfill")
+
         async def _scanner_tail():
             async for msg in scanner_feed.tail(interval=1.0, start_at_end=True):
                 try:
@@ -221,6 +223,34 @@ class Engine:
         else:
             _log.info("news-tester feed disabled; all-in-one-scanner only")
             await _scanner_tail()
+
+    async def _grader_backfill_loop(self) -> None:
+        """Grade tickers that missed GPT due to old rules, state drift, or NBREAK pauses.
+        Also periodically sweeps stale PENDING_AI states (ticker stuck because AI call
+        failed and no new alert arrived to trigger the inline recovery).
+        """
+        await asyncio.sleep(8.0)
+        try:
+            from .grader import reconcile
+
+            n = await reconcile.run_backfill(self)
+            if n:
+                self._score_count += n
+                _log.info("grader backfill complete: %d graded", n)
+        except Exception:
+            _log.exception("grader backfill loop failed")
+
+        # Periodic PENDING_AI sweep — runs every 2 minutes throughout the session.
+        while True:
+            await asyncio.sleep(120.0)
+            try:
+                from .grader import reconcile as _rec
+
+                cleared = _rec.clear_stale_pending_ai()
+                if cleared:
+                    _log.info("stale PENDING_AI sweep cleared %d ticker(s)", cleared)
+            except Exception:
+                _log.exception("stale PENDING_AI sweep failed")
 
     # ── periodic ticker-map refresh (6h TTL is internal) ─────────────────
     async def _ticker_map_refresher(self) -> None:
@@ -315,6 +345,26 @@ class Engine:
                 pass
 
         entry_f = float(row.get("entry_price") or 0.0)
+        peak_f = entry_f
+        try:
+            stored_peak = row.get("peak_price")
+            if stored_peak is not None:
+                peak_f = max(peak_f, float(stored_peak))
+        except (TypeError, ValueError):
+            pass
+        try:
+            pos_row = await t212_ai.position_row_for_ticker(t212_tkr, bypass_cache=False)
+            if pos_row:
+                live_px = float(pos_row.get("currentPrice") or 0.0)
+                if live_px > 0:
+                    peak_f = max(peak_f, live_px)
+        except Exception:
+            pass
+        if peak_f > entry_f:
+            try:
+                db.trade_update_peak_price(tid, peak_f)
+            except Exception:
+                pass
         try:
             tp_row = float(row.get("tp") or 0.0)
         except (TypeError, ValueError):
@@ -357,6 +407,7 @@ class Engine:
             "reason": resume_reason,
             "risk_flags": [],
             "alert": alert_reload,
+            "highest_price": peak_f,
         }
         if "reconcile" in str(resume_reason or "").lower() or "reconciled" in str(
             row.get("exit_reason") or ""
@@ -735,7 +786,7 @@ class Engine:
                         tracked_tickers.add(tkr_sl)
 
                         row_open = db.fetchone(
-                            "SELECT id, status FROM trades WHERE id=?",
+                            "SELECT id, status, open_ts FROM trades WHERE id=?",
                             (int(sl.trade_id),),
                         )
                         if not row_open or str(row_open["status"] or "").upper() != "OPEN":
@@ -756,25 +807,38 @@ class Engine:
 
                         qty_b = broker_by_tkr.get(tkr_sl, 0.0)
                         if qty_b <= 1e-6:
+                            open_ts = float(dict(row_open).get("open_ts") or 0.0)
+                            if (
+                                open_ts > 0
+                                and time.time() - open_ts < config.OPEN_RECONCILE_GRACE_SECONDS
+                            ):
+                                _log.debug(
+                                    "AI RECONCILE skip flat slot=%s t212=%s — within open grace %.0fs",
+                                    sl.index,
+                                    tkr_sl,
+                                    config.OPEN_RECONCILE_GRACE_SECONDS,
+                                )
+                                continue
                             _log.warning(
                                 "AI RECONCILE broker flat slot=%s t212=%s — releasing slot (await broker confirm)",
                                 sl.index,
                                 tkr_sl,
                             )
+                            pending_tid = int(sl.trade_id)
                             db.execute(
                                 """UPDATE trades SET status='SELL_PENDING', exit_ts=COALESCE(exit_ts, ?),
                                           exit_reason=COALESCE(exit_reason, 'reconcile_broker_flat')
                                    WHERE id=? AND status='OPEN'""",
-                                (time.time(), int(sl.trade_id)),
+                                (time.time(), pending_tid),
                             )
                             await self._stop_monitor_for_slot_ix(int(sl.index))
                             await self.mgr.release_after_sell(sl)
                             try:
                                 from .position_monitor import _try_confirm_close_from_broker
 
-                                await _try_confirm_close_from_broker(int(sl.trade_id), tkr_sl)
+                                await _try_confirm_close_from_broker(pending_tid, tkr_sl)
                             except Exception:
-                                _log.exception("reconcile confirm after flat trade=%s", sl.trade_id)
+                                _log.exception("reconcile confirm after flat trade=%s", pending_tid)
                             had_fast = True
                             continue
 
@@ -974,6 +1038,21 @@ class Engine:
             return
 
         if ticker:
+            if t212_ai.instrument_map_ready() and t212_ai.resolve_ticker(ticker) is None:
+                try:
+                    from .grader import state as ticker_state
+
+                    ticker_state.update(
+                        ticker,
+                        {"state": "DISQUALIFIED", "disqualify_reason": "not_on_t212"},
+                    )
+                except Exception:
+                    _log.exception("not_on_t212 ticker_state update failed for %s", ticker)
+                recent_entry["grader_state"] = "DISQUALIFIED"
+                recent_entry["active_label"] = "FILTERED"
+                recent_entry["disqualify_reason"] = "not_on_t212"
+                return
+
             bl = db.t212_blacklist_get(ticker)
             if bl:
                 tag = ""
@@ -1002,6 +1081,16 @@ class Engine:
             db.set_alert_news_class(alert_id, news_class)
             recent_entry["news_class"] = news_class
             if news_class == "NEGATIVE":
+                try:
+                    from .grader import state as ticker_state
+
+                    ticker_state.update(
+                        ticker,
+                        {"state": "DISQUALIFIED", "disqualify_reason": "negative_news"},
+                    )
+                except Exception:
+                    _log.exception("negative_news ticker_state update failed for %s", ticker)
+                recent_entry["grader_state"] = "DISQUALIFIED"
                 recent_entry["active_label"] = "FILTERED"
                 recent_entry["disqualify_reason"] = "negative_news"
                 return
@@ -1074,10 +1163,6 @@ class Engine:
             alert["discord_message_edit"] = True
         alert["discord_ts"] = msg.get("timestamp")
         ticker = (alert.get("ticker") or "").upper() or None
-
-        # ── Not on T212: skip DB, Gemini, filters, queue (hourly instrument map) ─
-        if ticker and t212_ai.resolve_ticker(ticker) is None:
-            return
 
         await self._run_scanner_grader_path(msg, alert, content, is_edit=is_edit)
 
@@ -1294,8 +1379,41 @@ class Engine:
                 )
                 return
 
+            bl = db.t212_blacklist_get(ticker)
+            if bl:
+                br = str(bl["reason"] or "").upper()
+                det = str(bl["detail"] or "").lower()
+                if (
+                    "CLOSE_ONLY" in br
+                    or "close_only" in det
+                    or "close only" in det
+                    or "close-only" in det
+                ):
+                    blob = json.dumps(
+                        {
+                            "http_status": 0,
+                            "body": {"detail": "instrument in close-only mode (blacklist)"},
+                        }
+                    )
+                    rid = _reject_row(blob, "close_only_mode", attempted_qty=0.0)
+                    _record_failed(
+                        rid,
+                        "close_only_mode",
+                        kind="close_only_mode",
+                        http_status=0,
+                        body={"detail": "instrument in close-only mode (blacklist)"},
+                        qty=0.0,
+                    )
+                    _log.warning(
+                        "TRADE blocked — close-only blacklist %s (row=%s)",
+                        ticker,
+                        rid,
+                    )
+                    return
+
             precision = t212_ai.quantity_precision(t212_code)
-            capital_usd = config.SLOT_CAPITAL_GBP * config.GBP_USD_RATE
+            slot_gbp = config.slot_capital_gbp_for_trade(db=db)
+            capital_usd = slot_gbp * config.GBP_USD_RATE
             base_qty = t212_ai.snap_quantity(capital_usd / entry, precision)
             min_q = t212_ai.minimum_buy_quantity(t212_code)
             if base_qty < min_q:
@@ -1430,8 +1548,8 @@ class Engine:
 
             trade_id = db.insert(
                 """INSERT INTO trades(slot, ticker, score_id, alert_id, entry_price, tp, stop, capital_gbp,
-                                      quantity, open_ts, status, t212_open_order_id)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                      quantity, open_ts, status, t212_open_order_id, peak_price)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     slot.index,
                     t212_code,
@@ -1445,6 +1563,7 @@ class Engine:
                     time.time(),
                     "OPEN",
                     str(order.get("id") or ""),
+                    eff_entry,
                 ),
             )
             score_chain = db.scores_for_alert(int(alert_id)) if alert_id else []

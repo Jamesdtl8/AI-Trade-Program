@@ -155,6 +155,16 @@ async def _run_openai_grade(
     recent_entry: dict[str, Any],
     why: str,
 ) -> dict[str, Any] | None:
+    # Capture the state before we go PENDING_AI so we can restore it on failure.
+    # WNW bug: was restoring to hardcoded "WATCHING" even when prior state was "WATCH",
+    # leaving the ticker in the wrong grade level after a silent AI failure.
+    prior_state = str(st_row.get("state") or "WATCHING")
+    # Fallback state on failure: preserve WATCH if that's where we came from,
+    # otherwise WATCHING (fresh episode). Never restore to PENDING_AI itself.
+    fallback_state = prior_state if prior_state in ("WATCH", "WATCHING", "WATCHING") else "WATCHING"
+    if fallback_state == "PENDING_AI":
+        fallback_state = "WATCH"
+
     ticker_state.update(tk, {"state": "PENDING_AI"})
     recent_entry["grader_state"] = "PENDING_AI"
     recent_entry["active_label"] = "REVIEW"
@@ -162,12 +172,12 @@ async def _run_openai_grade(
     try:
         result, latency_ms, cost_gbp = await llm_grader.grade_alert(st_row)
     except Exception:
-        _log.exception("AI grader failed %s", tk)
-        back = "WATCHING"
-        ticker_state.update(tk, {"state": back})
+        _log.exception("AI grader failed %s — restoring state=%s", tk, fallback_state)
+        ticker_state.update(tk, {"state": fallback_state})
         st_row = ticker_state.get_or_create(tk)
         recent_entry["grader_state"] = st_row.get("state")
         recent_entry["active_label"] = ticker_state.ui_label(st_row)
+        recent_entry["defer_reason"] = "ai_error_restored"
         return None
 
     _log.info(
@@ -179,10 +189,10 @@ async def _run_openai_grade(
     )
 
     if not result:
-        ticker_state.update(tk, {"state": "WATCHING"})
+        ticker_state.update(tk, {"state": fallback_state})
         st_row = ticker_state.get_or_create(tk)
-        recent_entry["grader_state"] = "WATCHING"
-        recent_entry["active_label"] = "WATCHING"
+        recent_entry["grader_state"] = fallback_state
+        recent_entry["active_label"] = ticker_state.ui_label(st_row)
         return None
 
     st_row = ticker_state.get_or_create(tk)
@@ -221,6 +231,9 @@ async def process_scanner_alert(
             recent_entry["active_label"] = ticker_state.ui_label(st_row)
             recent_entry["defer_reason"] = "grader_in_flight"
             return None
+        # AI call timed out. Restore to WATCH so the ticker can be re-evaluated
+        # on next momentum alert (continuation_regrade / watch_momentum_regrade).
+        _log.warning("PENDING_AI timeout clearing %s (age=%.0fs)", tk, age)
         ticker_state.update(tk, {"state": "WATCH"})
         st_row = ticker_state.get_or_create(tk)
         st = "WATCH"

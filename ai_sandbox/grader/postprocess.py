@@ -532,9 +532,10 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
         if note not in flags:
             flags.append(note)
 
-    if action == "TRADE" and alert_count == 2 and not reentry.is_reentry_episode(
-        state, scanner_ticker=scanner_tk
-    ):
+    # The alert-2 dual-MOMENTUM guard applies to ALL alert-2 TRADE decisions,
+    # including reentry episodes. A reentry at alert 2 has even less track record
+    # than a fresh episode — if alert 1 had no MOMENTUM label you're entering blind.
+    if action == "TRADE" and alert_count == 2:
         allowed2, block2 = alert_2_trade_allowed(alerts)
         if not allowed2:
             note = {
