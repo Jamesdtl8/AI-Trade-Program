@@ -1471,6 +1471,11 @@ class Engine:
                             detail=brief[:500] if brief else None,
                             t212_instrument=t212_code or None,
                         )
+                        _log.warning(
+                            "T212 rejected OPEN %s — instrument untradeable, "
+                            "blacklisted for rest of day (trade row id=%s)",
+                            ticker, rid,
+                        )
                     except Exception:
                         _log.exception("t212_blacklist_add CLOSE_ONLY failed for %s", ticker)
                 _record_failed(
@@ -1481,10 +1486,11 @@ class Engine:
                     body=exc.body,
                     qty=quantity,
                 )
-                _log.warning(
-                    "T212 rejected OPEN %s qty=%s phase=%s short=%s (trade row id=%s)",
-                    ticker, quantity, phase, brief, rid,
-                )
+                if not is_co:
+                    _log.warning(
+                        "T212 rejected OPEN %s qty=%s phase=%s short=%s (trade row id=%s)",
+                        ticker, quantity, phase, brief, rid,
+                    )
                 return
 
             if order.get("stub"):

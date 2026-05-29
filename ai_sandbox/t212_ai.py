@@ -375,6 +375,13 @@ _AI_MAP_BUILT_TS: float = 0.0
 # Same as ``Trading_AI.ticker_map`` — broker code → newer public symbol for UI.
 _INSTRUMENT_DISPLAY_OVERRIDES: dict[str, str] = {
     "ONTX_US_EQ": "TRAW",
+    "SGBX_US_EQ": "OLOX",
+    "SGBX": "OLOX",
+}
+
+# Scanner / Discord symbols → T212 instrument when metadata still lists the old code.
+_SCANNER_INSTRUMENT_ALIASES: dict[str, str] = {
+    "OLOX": "SGBX_US_EQ",
 }
 
 
@@ -453,6 +460,14 @@ async def refresh_ticker_map(force: bool = False) -> int:
                         new_max_open.setdefault(head, mx)
         except (TypeError, ValueError):
             pass
+    for sym, inst_code in _SCANNER_INSTRUMENT_ALIASES.items():
+        sym_u = sym.strip().upper()
+        inst_u = inst_code.strip().upper()
+        if sym_u and inst_u:
+            new[sym_u] = inst_u
+            ovr = _INSTRUMENT_DISPLAY_OVERRIDES.get(inst_u)
+            if ovr:
+                new_disp[inst_u] = ovr
     for inst in instruments:
         if not isinstance(inst, dict):
             continue
@@ -475,8 +490,21 @@ async def refresh_ticker_map(force: bool = False) -> int:
         _AI_MAX_OPEN.clear()
         _AI_MAX_OPEN.update(new_max_open)
         _AI_MAP_BUILT_TS = time.time()
-        _log.info("AI sandbox built T212 ticker map (%d entries)", len(_AI_MAP))
+        sample_keys: set[str] = set()
+        for inst in instruments[:5]:
+            if isinstance(inst, dict):
+                sample_keys.update(str(k) for k in inst.keys())
+        _log.info(
+            "AI sandbox built T212 ticker map (%d entries, sample fields: %s)",
+            len(_AI_MAP),
+            ", ".join(sorted(sample_keys)) if sample_keys else "?",
+        )
     return len(_AI_MAP)
+
+
+def instrument_map_ready() -> bool:
+    """True once ``/equity/metadata/instruments`` has been loaded into memory."""
+    return bool(_AI_MAP) and _AI_MAP_BUILT_TS > 0
 
 
 def resolve_ticker(raw: str | None) -> str | None:
@@ -486,12 +514,21 @@ def resolve_ticker(raw: str | None) -> str | None:
     Tries the AI sandbox's own cache first, then falls back to the main bot's
     ticker_map dict (in case it has entries we don't yet). Returns ``None``
     if the symbol is genuinely unknown to T212.
+
+    Safety: when using the Trading_AI fallback, the resolved T212 code head
+    (e.g. ``RYB`` from ``RYB_US_EQ``) must match the scanner ticker exactly.
+    If they differ and the scanner ticker is not a known alias, the mapping is
+    treated as a stale/corrupt cross-mapping and discarded.  This prevents
+    trading the wrong instrument (e.g. MYND resolving to RYB_US_EQ).
     """
     if not raw:
         return None
     raw_up = raw.strip().upper().lstrip("$")
     if not raw_up:
         return None
+    alias = _SCANNER_INSTRUMENT_ALIASES.get(raw_up)
+    if alias:
+        return alias
     code = _AI_MAP.get(raw_up)
     if code:
         return code
@@ -501,6 +538,18 @@ def resolve_ticker(raw: str | None) -> str | None:
         from Trading_AI import ticker_map  # type: ignore
         code = ticker_map._MAP.get(raw_up)  # noqa: SLF001
         if code:
+            code_head = code.split("_", 1)[0].upper()
+            if code_head != raw_up:
+                # The T212 code head doesn't match the scanner ticker.
+                # This is a stale or cross-mapped entry (e.g. MYND→RYB_US_EQ).
+                # Only trust it if the scanner ticker is a documented alias.
+                _log.warning(
+                    "resolve_ticker: BLOCKED Trading_AI mapping %s→%s "
+                    "(code head %r ≠ scanner ticker %r) — add to "
+                    "_SCANNER_INSTRUMENT_ALIASES if this rename is intentional",
+                    raw_up, code, code_head, raw_up,
+                )
+                return None
             return code
         if "_" in raw_up and raw_up in ticker_map._MAP.values():
             return raw_up
@@ -520,6 +569,9 @@ def display_raw_for(t212_code: str | None) -> str:
     if code in _AI_DISPLAY_RAW:
         return _AI_DISPLAY_RAW[code]
     head = code.split("_", 1)[0]
+    ovr_head = _INSTRUMENT_DISPLAY_OVERRIDES.get(head)
+    if ovr_head:
+        return ovr_head
     return head or code
 
 
@@ -570,25 +622,36 @@ def _parse_min_qty_hint_from_body(body: Any) -> float | None:
 
 
 def is_close_only_error(body: Any) -> bool:
-    """True when T212 rejects new buys because the instrument is in close-only mode."""
+    """True when T212 rejects new buys because the instrument is untradeable.
+
+    Covers both close-only mode (instrument-close-only-mode) and the generic
+    'Instrument can not be traded' broker rejection seen on VCIG-type blocks.
+    Both warrant an immediate day-long blacklist so we stop wasting AI grades.
+    """
+    _NOT_TRADEABLE_PHRASES = (
+        "instrument-close-only-mode",
+        "close-only",
+        "close only",
+        "instrument can not be traded",
+        "instrument cannot be traded",
+        "cannot be traded",
+        "can not be traded",
+        "not tradeable",
+        "not tradable",
+    )
     if isinstance(body, dict):
         et = str(body.get("type") or "").lower().replace("\\", "/")
-        if "instrument-close-only-mode" in et:
-            return True
         detail = str(body.get("detail") or "").lower()
-        if "close only" in detail or "close-only" in detail:
-            return True
         try:
             blob = json.dumps(body).lower()
         except Exception:
             blob = ""
-        if "instrument-close-only-mode" in blob or "close-only" in blob:
-            return True
+        haystack = et + " " + detail + " " + blob
     elif body:
-        s = str(body).lower()
-        if "close-only" in s or "close only" in s or "instrument-close-only-mode" in s:
-            return True
-    return False
+        haystack = str(body).lower()
+    else:
+        return False
+    return any(phrase in haystack for phrase in _NOT_TRADEABLE_PHRASES)
 
 
 def quantity_precision(t212_code: str) -> int:
