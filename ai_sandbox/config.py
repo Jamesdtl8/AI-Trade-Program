@@ -87,6 +87,37 @@ def openai_model_grader() -> str:
     return _env("OPENAI_MODEL") or _env("AI_OPENAI_MODEL") or "gpt-5-nano"
 
 
+def grader_provider() -> str:
+    """``gemini`` (default) or ``openai`` for the scanner grader."""
+    return (_env("AI_GRADER_PROVIDER", "gemini") or "gemini").strip().lower()
+
+
+def grader_model() -> str:
+    if grader_provider() == "openai":
+        return openai_model_grader()
+    return _env("AI_GRADER_MODEL") or "gemini-3.1-flash-lite"
+
+
+def grader_use_thinking() -> bool:
+    """When false (default), Gemini grader skips thinking_config for speed/cost."""
+    return _env("AI_GRADER_THINKING", "0").strip().lower() in ("1", "true", "yes")
+
+
+def grader_thinking_level() -> str:
+    lvl = (_env("AI_GRADER_THINKING_LEVEL", "LOW") or "LOW").strip().upper()
+    if lvl in ("MINIMAL", "LOW", "MEDIUM", "HIGH"):
+        return lvl
+    return "LOW"
+
+
+def grader_max_output_tokens() -> int:
+    try:
+        n = int(_env("AI_GRADER_MAX_OUTPUT_TOKENS", "4096"))
+    except ValueError:
+        n = 4096
+    return max(512, min(8192, n))
+
+
 def openai_token_price_usd_per_million(model: str) -> tuple[float, float]:
     """Return (input USD per 1M tokens, output USD per 1M) for billing estimates."""
     m = (model or "").strip().lower()
@@ -103,7 +134,7 @@ def openai_token_price_usd_per_million(model: str) -> tuple[float, float]:
                 return float(e["in"]), float(e["out"])
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             pass
-    if "gpt-5-nano" in m:
+    if "gpt-5-nano" in m or "gpt-5.4-nano" in m:
         return 0.05, 0.40
     if "gpt-5-mini" in m:
         return 0.25, 2.00
@@ -214,6 +245,8 @@ def gemini_token_price_usd_per_million(model: str) -> tuple[float, float]:
         return 0.075, 0.30
     if "3.1" in m and "flash-lite" in m:
         return 0.10, 0.40
+    if "3.5" in m and "flash" in m:
+        return 0.15, 0.60
     if "flash-lite" in m:
         return 0.10, 0.40
     return 0.15, 0.60
@@ -336,9 +369,83 @@ def ai_t212_instrument_map_ttl_seconds() -> float:
 
 # Tunables — exposed as module constants so we never typo them in business code.
 SLOT_COUNT = 5
-SLOT_CAPITAL_GBP = 5000.0
+SLOT_CAPITAL_GBP = 5000.0  # fallback when T212 cash snapshot unavailable
 # Rough FX: £ → USD for slot sizing; inverse used to store/show deployed £ (qty × $ entry).
 GBP_USD_RATE = 1.27
+
+
+def reinvest_profit_fraction() -> float:
+    """Share of each closed-trade profit redeployed across the pot (default 50%)."""
+    raw = (_env("AI_REINVEST_PROFIT_FRACTION", "0.5")).strip()
+    try:
+        v = float(raw)
+        return max(0.0, min(1.0, v))
+    except ValueError:
+        return 0.5
+
+
+def available_cash_gbp(cash: dict | None) -> float | None:
+    """``availableToTrade`` from :func:`t212_ai.cash_snapshot` (account currency)."""
+    if not cash or cash.get("error"):
+        return None
+    free = cash.get("free")
+    if free is None:
+        return None
+    try:
+        v = float(free)
+        return v if v >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def profit_withheld_from_deployment_gbp(db) -> float:
+    """Non-reinvested profit kept out of deployable cash: (1 − reinvest%) × gross wins."""
+    row = db.fetchone(
+        """SELECT COALESCE(SUM(pnl_gbp), 0) AS s FROM trades
+            WHERE status='CLOSED' AND pnl_gbp IS NOT NULL AND pnl_gbp > 0"""
+    )
+    gross = float(row["s"] or 0.0) if row else 0.0
+    return round(gross * (1.0 - reinvest_profit_fraction()), 2)
+
+
+def deployable_cash_gbp(*, db, cash: dict | None = None) -> float | None:
+    """Cash available to split across slots after withholding unreinvested profits."""
+    if cash is None:
+        from . import t212_ai
+
+        cash = t212_ai.cash_snapshot()
+    avail = available_cash_gbp(cash)
+    if avail is None:
+        return None
+    withheld = profit_withheld_from_deployment_gbp(db)
+    return round(max(0.0, avail - withheld), 2)
+
+
+def slot_capital_gbp_for_trade(*, db, cash: dict | None = None) -> float:
+    """Max GBP per slot: deployable cash ÷ :data:`SLOT_COUNT`."""
+    deployable = deployable_cash_gbp(db=db, cash=cash)
+    if deployable is None or deployable <= 0:
+        return float(SLOT_CAPITAL_GBP)
+    return round(deployable / float(SLOT_COUNT), 2)
+
+
+def capital_sizing_snapshot(*, db, cash: dict | None = None) -> dict[str, float | None]:
+    """Dashboard/engine fields for dynamic slot sizing."""
+    if cash is None:
+        from . import t212_ai
+
+        cash = t212_ai.cash_snapshot()
+    avail = available_cash_gbp(cash)
+    withheld = profit_withheld_from_deployment_gbp(db)
+    deployable = deployable_cash_gbp(db=db, cash=cash)
+    per_slot = slot_capital_gbp_for_trade(db=db, cash=cash)
+    return {
+        "available_cash_gbp": avail,
+        "profit_withheld_gbp": withheld,
+        "deployable_cash_gbp": deployable,
+        "slot_capital_gbp": per_slot,
+        "reinvest_profit_fraction": reinvest_profit_fraction(),
+    }
 
 
 def usd_notionals_to_gbp(usd: float) -> float:
@@ -390,10 +497,12 @@ FILL_WAIT_TIMEOUT_SECONDS = fill_wait_timeout_seconds()
 FILL_PARTIAL_THRESHOLD = fill_partial_threshold()
 POSITION_RECONCILE_FAST_S = 5
 POSITION_RECONCILE_SLOW_S = 30
+# Ignore transient "broker flat" right after a fill (positions API lag).
+OPEN_RECONCILE_GRACE_SECONDS = 90
 # Do not stop-loss broker-adopted orphans immediately (they may already be underwater).
 RECONCILE_STOP_GRACE_SECONDS = 1800
 EXIT_FLAT_POLL_TIMEOUT_S = 45.0
-MAX_STOP_LOSS_PCT = 10.0   # hard cap — engine clamps scorer stop so it can never sit deeper than entry × (1 - MAX_STOP_LOSS_PCT/100)
+MAX_STOP_LOSS_PCT = 15.0   # hard cap — engine clamps scorer stop so it can never sit deeper than entry × (1 - MAX_STOP_LOSS_PCT/100)
 
 
 def take_profit_pct() -> float:

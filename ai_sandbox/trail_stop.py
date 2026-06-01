@@ -1,4 +1,4 @@
-"""Trailing stop ladder for position manager (New System; hard stop -10%).
+"""Trailing stop ladder for position manager (New System; hard stop from config).
 
 Trail arms permanently on first +7.5% peak gain — it does not turn off if price
 pulls back below +7.5%. Tier width is keyed off peak gain, not current P&L.
@@ -25,7 +25,7 @@ At exactly +10% peak:
   → PROBLEM: stop dropped. We fix this by never letting the computed stop fall
     below the running highest_stop seen so far (tracked in position_monitor).
 
-Hard stop: entry × 0.90 (-10%). Always active, provides an absolute floor.
+Hard stop: entry × (1 - hard_stop_pct/100). Always active, provides an absolute floor.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def calculate_stop(
     highest_price: float,
     current_gain_pct: float,
     *,
-    hard_stop_pct: float = 10.0,
+    hard_stop_pct: float = 15.0,
     highest_stop: float = 0.0,
 ) -> tuple[float, bool, Optional[float]]:
     """Return (stop_level, trail_active, trail_pct).

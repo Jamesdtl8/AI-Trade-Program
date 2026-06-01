@@ -332,7 +332,7 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
 
             stop_grace_until = float(setup.get("stop_grace_until") or 0.0)
 
-            # Hard stop: -10% unrealized P&L → market sell.
+            # Hard stop: max stop-loss % unrealized P&L → market sell.
             if (
                 unreal_pct is not None
                 and unreal_pct <= -stop_loss_pct

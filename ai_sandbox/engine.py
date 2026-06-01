@@ -1242,16 +1242,19 @@ class Engine:
                 return
             tp_plan = config.profit_target_price(entry, decision)
 
-            # ── HARD 10% STOP CAP ────────────────────────────────────────
+            # ── HARD MAX STOP CAP ────────────────────────────────────────
             min_stop = round(entry * (1.0 - config.MAX_STOP_LOSS_PCT / 100.0), 6)
             if stop_raw <= 0 or stop_raw >= entry:
                 stop = min_stop
                 _log.info(
-                    "stop %s missing/invalid — defaulting to 10%% floor %.4f",
-                    ticker, stop,
+                    "stop %s missing/invalid — defaulting to %.0f%% floor %.4f",
+                    ticker, config.MAX_STOP_LOSS_PCT, stop,
                 )
             elif stop_raw < min_stop:
-                _log.info("stop %s clamped %.4f → %.4f (10%% floor)", ticker, stop_raw, min_stop)
+                _log.info(
+                    "stop %s clamped %.4f → %.4f (%.0f%% floor)",
+                    ticker, stop_raw, min_stop, config.MAX_STOP_LOSS_PCT,
+                )
                 stop = min_stop
             else:
                 stop = stop_raw

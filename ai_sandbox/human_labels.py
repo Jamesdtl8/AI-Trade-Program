@@ -4,10 +4,10 @@ from __future__ import annotations
 
 _LABELS: dict[str, str] = {
     # Exit reasons
-    "stop_loss_10pct": "Hit Stop Loss 10%",
+    "stop_loss_10pct": "Hit Stop Loss 15%",
     "tp_market": "Take Profit (market sell)",
     "trail_breach": "Trailing Stop Hit",
-    "hard_stop_10pct": "Hit Hard Stop 10%",
+    "hard_stop_10pct": "Hit Hard Stop 15%",
     "market_sell": "Market Sell",
     "slots_full": "Unable due to Slots Full",
     # Grader disqualify

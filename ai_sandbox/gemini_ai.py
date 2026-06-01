@@ -766,9 +766,9 @@ ENTRY / MAX_ENTRY:
                   (T212 doesn't accept limits in pre/after-market) and max_entry
                   is informational only.
 
-STOP LOSS (HARD CAP — 10%):
+STOP LOSS (HARD CAP — 15%):
   The engine enforces a HARD floor: stop is never allowed to sit deeper than
-  entry × 0.90 (i.e. max 10% loss). If you propose a wider stop it will be
+  entry × 0.85 (i.e. max 15% loss). If you propose a wider stop it will be
   clamped silently. You can set it TIGHTER (e.g. 5-7% on fast_mover trades, or
   to alert1_price × 0.98 on two-alert acceleration setups) — that is preferred
   when structure supports it.
