@@ -624,9 +624,10 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
         action = "TRADE"
 
     # Pure volume momentum override: no named news, no structural squeeze tags, but extreme
-    # sustained RV with every alert printing higher than the last.  This is the RUBI pattern —
-    # gate_1=PASS_STRONG (tight float), gate_2=FAIL, gate_3=FAIL, peak RV 800x+, prices only
-    # going up.  The volume IS the catalyst.  Gate 3 squeeze tags are NOT required here.
+    # sustained RV with resuming momentum.  This is the RUBI/WCT pattern —
+    # gate_1=PASS_STRONG (tight float), gate_2=FAIL, gate_3=FAIL, peak RV 800x+, and the
+    # last 3 MOMENTUM/BREAKOUT prints are rising (allows intra-session pullbacks then recovery).
+    # The volume IS the catalyst.  Gate 3 squeeze tags are NOT required here.
     _cur_rv = float(_rv_seq[-1]) if _rv_seq else 0.0
     if (
         action in ("MONITOR", "WATCH")
@@ -639,12 +640,12 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
         and _cur_rv >= PURE_VOLUME_MOMENTUM_RV_CURRENT
         and _px_move_pct >= PURE_VOLUME_MOMENTUM_MIN_MOVE
         and alert_count >= PURE_VOLUME_MOMENTUM_MIN_ALERTS
-        and prices_strictly_increasing(alerts)
+        and rising_momentum_streak_skip_dips(alerts, n=3)
         and not reentry.is_reentry_episode(state, scanner_ticker=scanner_tk)
     ):
         pvm_note = (
             f"Pure volume momentum: peak RV {_peak_rv:.0f}x current {_cur_rv:.0f}x, "
-            f"+{_px_move_pct:.0f}% from alert-1, all prices rising — "
+            f"+{_px_move_pct:.0f}% from alert-1, momentum streak rising — "
             "volume is the catalyst (no news/squeeze tags required)"
         )
         if pvm_note not in flags:
