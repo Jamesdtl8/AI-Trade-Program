@@ -19,16 +19,24 @@ KNOWN_RUNNER_RECOVERY_WINDOW = 6
 NEWS_MOMENTUM_RV_MIN = 90.0
 NEWS_MOMENTUM_STREAK = 2
 TIGHT_FLOAT_MAX = 5_000_000
-ALERT_2_RV_MIN = 50.0
+ALERT_2_RV_MIN = 25.0  # kept in sync with hard_rules.ALERT_2_RV_MIN
 ALERT_2_MAX_GAP_SEC = 900.0
-ALERT_2_FLOAT_MAX = 5_000_000
+ALERT_2_FLOAT_MAX = 10_000_000  # raised from 5M — allow alert#2 entries on tighter but slightly larger floats
 
-# Extreme momentum scalp thresholds (no-news override).
+# Extreme momentum scalp thresholds (no-news override, requires gate_3=PASS_STRONG).
 # When RV hits extreme levels and price has moved significantly from alert-1,
 # the price action itself is the catalyst — we don't need named news for a 7.5% scalp.
 EXTREME_RV_SCALP_THRESHOLD = 500.0   # RV must be ≥500x at any point in the sequence
 EXTREME_RV_SCALP_PRICE_MOVE = 20.0   # price must be ≥20% above alert-1 price
 EXTREME_RV_SCALP_MIN_ALERTS = 3      # at least 3 alerts (build-up required)
+
+# Pure volume momentum thresholds (no-news, no-squeeze-tags override).
+# RUBI pattern: gate_1=PASS_STRONG, gate_2=FAIL, gate_3=FAIL but sustained extreme RV
+# with every alert price higher than the last — volume IS the catalyst here.
+PURE_VOLUME_MOMENTUM_RV_PEAK = 800.0    # peak RV in the sequence must be ≥800x
+PURE_VOLUME_MOMENTUM_RV_CURRENT = 300.0 # current alert RV must still be ≥300x
+PURE_VOLUME_MOMENTUM_MIN_MOVE = 10.0    # price must be ≥10% above alert-1 price
+PURE_VOLUME_MOMENTUM_MIN_ALERTS = 3     # at least 3 alerts (build-up required)
 _NEWS_SKIP = frozenset({"none", "same", "n/a", "-", ""})
 
 
@@ -541,16 +549,28 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
         if note not in flags:
             flags.append(note)
 
+    # Pre-compute RV and price sequences — used in several rules below.
+    _rv_seq = ctx.get("rv_sequence") or []
+    _px_seq = ctx.get("price_sequence") or []
+    _peak_rv = max(_rv_seq) if _rv_seq else 0.0
+    _first_px = float(_px_seq[0]) if _px_seq else 0.0
+    _cur_px = float(_px_seq[-1]) if _px_seq else 0.0
+    _px_move_pct = ((_cur_px - _first_px) / _first_px * 100) if _first_px > 0 else 0.0
+
     # Gate 2 PARTIAL + Gate 3 weak → force WATCH.
     # No named news catalyst AND no strong structural squeeze backing = high reversal risk.
     # The pattern in losses: BIYA, CREG, PRFX — all G2=PARTIAL/FAIL, G3 ≤ PASS.
-    # Exemptions: Known Runner override (kr_override) already bypasses news requirement
-    # deliberately; News Momentum Override requires G2=PASS (named news) so never hits here.
+    # Exemptions:
+    #  - Known Runner override (kr_override) already bypasses news requirement deliberately.
+    #  - News Momentum Override requires G2=PASS (named news) so never hits here.
+    #  - Peak RV ≥ PURE_VOLUME_MOMENTUM_RV_PEAK: at this volume level the tape itself IS
+    #    the catalyst — blocking on "no headline" here would just keep us out of RUBI-type moves.
     if (
         action == "TRADE"
         and not kr_override
         and str(gates.get("gate_2") or "").upper() in ("PARTIAL", "FAIL")
         and not _gate_passes(gates.get("gate_3"), require_strong=True)
+        and _peak_rv < PURE_VOLUME_MOMENTUM_RV_PEAK  # exempt when volume is extreme
     ):
         note = "No named news catalyst + weak structural squeeze → capping at WATCH"
         if note not in flags:
@@ -573,12 +593,6 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
     # structural squeeze, the price action IS the catalyst — we don't need a news headline
     # to justify a 7.5% scalp.  This is the CDT pattern: G2=FAIL but rv=2654x and
     # price moved +70% from alert 1.  Only fires on alert 3+ (must have a build-up).
-    _rv_seq = ctx.get("rv_sequence") or []
-    _px_seq = ctx.get("price_sequence") or []
-    _peak_rv = max(_rv_seq) if _rv_seq else 0.0
-    _first_px = float(_px_seq[0]) if _px_seq else 0.0
-    _cur_px = float(_px_seq[-1]) if _px_seq else 0.0
-    _px_move_pct = ((_cur_px - _first_px) / _first_px * 100) if _first_px > 0 else 0.0
     if (
         action in ("MONITOR", "WATCH")
         and not kr_override
@@ -603,6 +617,44 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
                 "from": grade,
                 "to": "STRONG",
                 "reason": "extreme_rv_no_news_scalp",
+            }
+        )
+        ctx["grade_change_history"] = history
+        grade = "STRONG"
+        action = "TRADE"
+
+    # Pure volume momentum override: no named news, no structural squeeze tags, but extreme
+    # sustained RV with every alert printing higher than the last.  This is the RUBI pattern —
+    # gate_1=PASS_STRONG (tight float), gate_2=FAIL, gate_3=FAIL, peak RV 800x+, prices only
+    # going up.  The volume IS the catalyst.  Gate 3 squeeze tags are NOT required here.
+    _cur_rv = float(_rv_seq[-1]) if _rv_seq else 0.0
+    if (
+        action in ("MONITOR", "WATCH")
+        and not kr_override
+        and str(gates.get("gate_2") or "").upper() == "FAIL"
+        and not _gate_passes(gates.get("gate_3"))
+        and _gate_pass_strong(gates.get("gate_1"))
+        and _gate_passes(gates.get("gate_4"), allow_partial=True)
+        and _peak_rv >= PURE_VOLUME_MOMENTUM_RV_PEAK
+        and _cur_rv >= PURE_VOLUME_MOMENTUM_RV_CURRENT
+        and _px_move_pct >= PURE_VOLUME_MOMENTUM_MIN_MOVE
+        and alert_count >= PURE_VOLUME_MOMENTUM_MIN_ALERTS
+        and prices_strictly_increasing(alerts)
+        and not reentry.is_reentry_episode(state, scanner_ticker=scanner_tk)
+    ):
+        pvm_note = (
+            f"Pure volume momentum: peak RV {_peak_rv:.0f}x current {_cur_rv:.0f}x, "
+            f"+{_px_move_pct:.0f}% from alert-1, all prices rising — "
+            "volume is the catalyst (no news/squeeze tags required)"
+        )
+        if pvm_note not in flags:
+            flags.append(pvm_note)
+        history = list(ctx.get("grade_change_history") or [])
+        history.append(
+            {
+                "from": grade,
+                "to": "STRONG",
+                "reason": "pure_volume_momentum_override",
             }
         )
         ctx["grade_change_history"] = history
