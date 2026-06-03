@@ -368,8 +368,17 @@ def ai_t212_instrument_map_ttl_seconds() -> float:
 
 
 # Tunables — exposed as module constants so we never typo them in business code.
-SLOT_COUNT = 5
-SLOT_CAPITAL_GBP = 5000.0  # fallback when T212 cash snapshot unavailable
+SLOT_COUNT = 2
+
+# Two-pot capital model.
+# Pot 0 = primary (larger stake); Pot 1 = secondary (smaller stake).
+# Total = POT_TOTAL_GBP. If a trade in one pot is capped by T212 position
+# limits and deploys less than its target, the unused capital remains in the
+# shared pool and keeps the other pot fully funded.
+POT_CAPITALS_GBP: list[float] = [10_000.0, 4_000.0]
+POT_TOTAL_GBP: float = sum(POT_CAPITALS_GBP)  # 14 000
+SLOT_CAPITAL_GBP = POT_CAPITALS_GBP[0]  # fallback (primary-pot size) when T212 cash unavailable
+
 # Rough FX: £ → USD for slot sizing; inverse used to store/show deployed £ (qty × $ entry).
 GBP_USD_RATE = 1.27
 
@@ -421,12 +430,46 @@ def deployable_cash_gbp(*, db, cash: dict | None = None) -> float | None:
     return round(max(0.0, avail - withheld), 2)
 
 
-def slot_capital_gbp_for_trade(*, db, cash: dict | None = None) -> float:
-    """Max GBP per slot: deployable cash ÷ :data:`SLOT_COUNT`."""
+def slot_capital_gbp_for_slot(
+    slot_index: int,
+    *,
+    db,
+    cash: dict | None = None,
+    active_deployed_gbp: float = 0.0,
+) -> float:
+    """Capital (GBP) to deploy for a specific pot, respecting the shared £14K budget.
+
+    Pot 0 targets £10,000 and Pot 1 targets £4,000.  The total is capped at
+    ``POT_TOTAL_GBP`` (£14K).  If the other pot's trade was capped by T212
+    position limits and deployed less than its target, the freed capital stays
+    in the shared pool and ensures this pot can still deploy its full target.
+
+    Args:
+        slot_index: 0 = primary pot, 1 = secondary pot.
+        active_deployed_gbp: sum of ``capital_gbp`` for all *other* currently
+            ACTIVE slots (not including this one, which is being opened now).
+    """
+    try:
+        target = float(POT_CAPITALS_GBP[slot_index])
+    except IndexError:
+        target = float(POT_CAPITALS_GBP[-1])
+
+    # Remaining shared budget after other slots have deployed.
+    pool = max(0.0, POT_TOTAL_GBP - float(active_deployed_gbp))
+
+    # Also constrain by the actual T212 cash available in the account.
     deployable = deployable_cash_gbp(db=db, cash=cash)
-    if deployable is None or deployable <= 0:
-        return float(SLOT_CAPITAL_GBP)
-    return round(deployable / float(SLOT_COUNT), 2)
+    if deployable is not None:
+        pool = min(pool, max(0.0, deployable))
+
+    if pool <= 0:
+        return 0.0
+    return round(min(target, pool), 2)
+
+
+def slot_capital_gbp_for_trade(*, db, cash: dict | None = None) -> float:
+    """Backwards-compat wrapper — returns primary-pot (slot 0) capital."""
+    return slot_capital_gbp_for_slot(0, db=db, cash=cash, active_deployed_gbp=0.0)
 
 
 def capital_sizing_snapshot(*, db, cash: dict | None = None) -> dict[str, float | None]:
@@ -438,12 +481,15 @@ def capital_sizing_snapshot(*, db, cash: dict | None = None) -> dict[str, float 
     avail = available_cash_gbp(cash)
     withheld = profit_withheld_from_deployment_gbp(db)
     deployable = deployable_cash_gbp(db=db, cash=cash)
-    per_slot = slot_capital_gbp_for_trade(db=db, cash=cash)
+    pot0 = slot_capital_gbp_for_slot(0, db=db, cash=cash, active_deployed_gbp=0.0)
+    pot1 = slot_capital_gbp_for_slot(1, db=db, cash=cash, active_deployed_gbp=pot0)
     return {
         "available_cash_gbp": avail,
         "profit_withheld_gbp": withheld,
         "deployable_cash_gbp": deployable,
-        "slot_capital_gbp": per_slot,
+        "slot_capital_gbp": pot0,          # primary pot (compat key for dashboard)
+        "pot_capitals_gbp": [pot0, pot1],  # both pots
+        "pot_total_gbp": POT_TOTAL_GBP,
         "reinvest_profit_fraction": reinvest_profit_fraction(),
     }
 

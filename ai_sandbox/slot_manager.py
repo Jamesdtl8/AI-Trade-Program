@@ -1,4 +1,4 @@
-"""5-slot manager: tracks state, queues alerts, enforces concentration rules."""
+"""2-slot manager (two-pot model): tracks state, queues alerts, enforces concentration rules."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class SlotManager:
     # ── inspection ─────────────────────────────────────────────────────────
     def snapshot(self) -> dict[str, Any]:
         return {
-            "slots": [s.__dict__ for s in self.state.slots],
+            "slots": [{**s.__dict__} for s in self.state.slots],
             "queue": [q.__dict__ for q in self.state.queue],
         }
 
@@ -120,6 +120,18 @@ class SlotManager:
         s.unreal_pct = None
         s.take_profit_order_id = None
         s.capital_gbp = 0.0
+        # Drop API overlay keys if they were written onto the instance.
+        for key in (
+            "display_ticker",
+            "broker_managed",
+            "broker_unassigned",
+            "wallet_total_cost_gbp",
+            "wallet_current_value_gbp",
+            "unreal_gbp",
+            "wallet_fx_impact_gbp",
+        ):
+            if hasattr(s, key):
+                delattr(s, key)
 
     async def assign(
         self,
@@ -333,8 +345,10 @@ class SlotManager:
 
     # ── pause logic ────────────────────────────────────────────────────────
     def entries_paused(self) -> tuple[bool, str]:
-        if self.negative_slot_count() >= 3:
-            return True, "3+ slots negative"
+        # With only 2 slots, pause new entries only when both are in the red
+        # (≥ SLOT_COUNT negative means all slots losing simultaneously).
+        if self.negative_slot_count() >= config.SLOT_COUNT:
+            return True, "both slots negative"
         return False, ""
 
     async def update_slot_pnl(self, slot: Slot, price: float, unreal_pct: float, decision: str | None) -> None:

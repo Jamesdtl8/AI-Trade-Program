@@ -2134,7 +2134,7 @@
   .ai-section-title { font-size: 11px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
   .ai-section-title .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 1.8s ease-in-out infinite; }
 
-  .ai-slots { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 10px; }
+  .ai-slots { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
   .ai-slot { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-height: 150px; display: flex; flex-direction: column; gap: 6px; }
   .ai-slot.active { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green-dim); }
   .ai-slot.sell_pending { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber-dim); }
@@ -4089,7 +4089,7 @@ function _aiRenderSlots(sl) {
     return `
       <div class="ai-slot ${state}">
         <div class="ai-slot-head">
-          <span class="ai-slot-idx">SLOT ${s.index + 1}</span>
+          <span class="ai-slot-idx">${s.index === 0 ? 'POT 1 — £10K' : 'POT 2 — £4K'}</span>
           <span class="ai-slot-state">${stateLbl}</span>
         </div>
         <div class="ai-slot-ticker">${escapeHtml(_aiDisplayTicker(s.ticker, s.display_ticker))}</div>
