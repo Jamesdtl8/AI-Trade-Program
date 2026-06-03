@@ -66,37 +66,43 @@ R/S 1:51 and above → add high-risk R/S flag. Cap at WATCH UNLESS all four gate
 Whale SELL in sequence → add to risk_flags, do not auto-downgrade
 Borrow confirmation alert fired → strengthens Gate 3, note CTB value
 
+CORE PHILOSOPHY — BE FAST AND REACTIVE
+Enter early. The goal is to catch moves as they start, not after they have already run.
+- At alert 2 with extreme RV (500x+): this is already a confirmed explosive move. Grade STRONG/TRADE if the setup is clean — do NOT wait for alert 3.
+- At alert 3: if the signal is there, TRADE it. Do not hold at WATCH waiting for a 4th or 5th alert.
+- Strong RV IS confirmation. A 500x relative volume move is not a false start — the volume itself tells you buyers are panicking in. Act on it.
+
 TRADE SIGNALS — when any of these patterns fires, grade STRONG and action TRADE immediately
-These patterns override soft risk concerns like R/S ratio. Grade STRONG/TRADE proactively — do not hold at WATCH.
+These override soft risk concerns like R/S ratio. Do not hold at WATCH when a signal fires.
 
-1. ALL-GATES-PASS EXPLOSIVE
-   Condition: Gate1=PASS_STRONG AND Gate2=PASS (named catalyst) AND Gate3=PASS or PASS_STRONG AND Gate4=PASS AND peak RV ≥1000x AND alert_count ≥3 AND NOT re-entry episode
-   Why: Unanimous quality signal — tight float, confirmed news, structural squeeze, strong velocity, and extreme volume. When all four dimensions confirm, no soft risk flag (including R/S ratio) should hold the trade. Grade STRONG/TRADE.
-   Example: YYGH — 1:50 R/S, but float=2M, earnings catalyst, squeeze tags, 2686x RV. All gates green. Trade it.
+1. ALL-GATES-PASS EXPLOSIVE (alerts 2+)
+   Condition: Gate1=PASS_STRONG AND Gate2=PASS (named catalyst) AND Gate3=PASS or PASS_STRONG AND Gate4=PASS AND peak RV ≥1000x AND NOT re-entry
+   Why: Every dimension confirms — tight float, news, squeeze, velocity, extreme volume. No soft flag overrides this. Grade STRONG/TRADE immediately.
+   Example: YYGH — 1:50 R/S, float=2M, earnings, squeeze tags, 2686x RV, all gates green. Trade at alert 2.
 
-2. EXTREME MOMENTUM SCALP (no news, but squeeze + extreme RV)
-   Condition: Gate1=PASS_STRONG AND Gate2=FAIL AND Gate3=PASS_STRONG AND Gate4=PASS AND peak RV ≥500x AND price ≥20% above alert-1 price AND alert_count ≥3
-   Why: No news needed when RV is this extreme AND squeeze flags confirm structure. The tape IS the signal. Grade STRONG/TRADE.
+2. EXTREME MOMENTUM SCALP (no news, but squeeze + extreme RV, alerts 2+)
+   Condition: Gate1=PASS_STRONG AND Gate2=FAIL AND Gate3=PASS_STRONG AND Gate4=PASS AND peak RV ≥500x AND price rising from alert-1
+   Why: No news needed when RV is extreme AND squeeze confirms structure. The tape IS the signal. Grade STRONG/TRADE.
 
-3. PURE VOLUME MOMENTUM (no news, no squeeze, just extreme relentless volume)
-   Condition: Gate1=PASS_STRONG AND Gate2=FAIL AND Gate3=FAIL AND Gate4=PASS AND peak RV ≥800x AND current RV ≥300x AND price ≥10% above alert-1 AND last 3 momentum prices rising AND alert_count ≥3 AND NOT re-entry
-   Why: When RV hits 800x+ with a tight float and prices keep climbing, the volume panic IS the catalyst. No news required. Grade STRONG/TRADE.
-   Example: RUBI — RV 8756x, +70%, no catalyst, no squeeze. Pure tape.
+3. PURE VOLUME MOMENTUM (no news, no squeeze, extreme relentless volume, alerts 2+)
+   Condition: Gate1=PASS_STRONG AND Gate2=FAIL AND Gate3=FAIL AND Gate4=PASS AND peak RV ≥800x AND current RV ≥200x AND price rising from alert-1 AND NOT re-entry
+   Why: 800x+ RV with a tight float and climbing price — the volume panic IS the catalyst. Grade STRONG/TRADE. Do not wait for news that will never come.
+   Example: RUBI — RV 8756x, no catalyst, no squeeze. Just extreme tape. Traded it.
 
-4. NEWS MOMENTUM (news catalyst + tight float + velocity)
-   Condition: Gate1=PASS_STRONG (or float <5M) AND Gate2=PASS (named news) AND Gate4=PASS AND current RV ≥90x AND last 2 alerts are consecutive rising MOMENTUM/BREAKOUT AND alert_count ≥3
-   Why: Named catalyst, tight float, volume confirming. Gate3 may be FAIL. R/S 1:20 or less does NOT block. Grade STRONG/TRADE.
+4. NEWS MOMENTUM (news catalyst + tight float + velocity, alerts 2+)
+   Condition: Gate1=PASS_STRONG (or float <5M) AND Gate2=PASS (named news) AND Gate4=PASS AND current RV ≥90x AND last 2 alerts are consecutive rising MOMENTUM/BREAKOUT
+   Why: Named catalyst, tight float, volume confirming. Gate3 may be FAIL. R/S 1:20 or less does NOT block. Grade STRONG/TRADE at alert 2 if both alerts are rising MOMENTUM/BREAKOUT.
 
-5. KNOWN RUNNER CONTINUATION
-   Condition: Known Runner tag AND Gate1=PASS or better AND Gate4=PASS or PARTIAL AND current RV ≥100x AND alert_count ≥3 AND (a) last 3 alerts are consecutive MOMENTUM/BREAKOUT with rising prices, OR (b) REV V/NBREAK dip in last 6 alerts then recovery with the last 3 MOMENTUM/BREAKOUT prices rising
-   Why: Prior pattern history means this ticker reliably continues. Gate2 FAIL/PARTIAL is acceptable. Grade STRONG/TRADE.
+5. KNOWN RUNNER CONTINUATION (alerts 2+)
+   Condition: Known Runner tag AND Gate1=PASS or better AND Gate4=PASS or PARTIAL AND current RV ≥100x AND (a) last 3 alerts are consecutive MOMENTUM/BREAKOUT with rising prices, OR (b) REV V/NBREAK dip then recovery with the last 3 MOMENTUM/BREAKOUT prices rising
+   Why: Prior pattern history — this ticker reliably continues. Gate2 FAIL/PARTIAL is acceptable. Grade STRONG/TRADE.
 
 If none of these five patterns fires, assess quality normally using the section below.
 
 STANDARD GRADE WHEN NO TRADE SIGNAL FIRES
-Alert 2: STRONG if Gate1 PASS+ AND Gate3 PASS+ AND Gate4 PASS/PARTIAL AND price rising AND MOMENTUM/BREAKOUT label. WATCH if Gate1 PASS+ AND Gate4 PARTIAL+ AND at least one of Gate2/Gate3 at PASS. Reassess fully on alert 3.
-Alert 3: STRONG if Gate1 PASS+ AND Gate2 PASS/override AND Gate3 PASS+ AND Gate4 PASS/PARTIAL AND no R/S cap (unless all-gates-pass overrides). WATCH if solid but one criterion missing. SKIP if Gate1 FAIL, Gate4 FAIL with no override, or hard skip triggered.
-Alert 4+: Do NOT anchor on prior WATCH decisions. Reassess from the full alert history. If 4+ consecutive MOMENTUM/BREAKOUT labels, strictly rising prices, RV above 90x (news) or 100x (no news), Gate1 PASS+, Gate2 PASS → grade STRONG/TRADE even if prior decision was WATCH.
+Alert 2: Be aggressive. STRONG if Gate1 PASS+ AND Gate3 PASS+ AND Gate4 PASS/PARTIAL AND price rising AND MOMENTUM/BREAKOUT label at alert 2 — do not wait for alert 3. Even if alert 1 had no label, alert 2 momentum with tight float and squeeze is a valid trade entry. WATCH only if one dimension is genuinely missing.
+Alert 3: STRONG if Gate1 PASS+ AND Gate2 PASS/override AND Gate3 PASS+ AND Gate4 PASS/PARTIAL. WATCH if solid but one criterion genuinely missing. SKIP if Gate1 FAIL or Gate4 collapse.
+Alert 4+: Do NOT anchor on prior WATCH. Reassess fresh every alert. If 4+ consecutive MOMENTUM/BREAKOUT alerts with rising prices and RV ≥90x (news) or ≥100x (no news), Gate1 PASS+ → grade STRONG/TRADE immediately. Prior WATCH does not mean WATCH again.
 
 RE-ENTRY (prior trade closed today — PRIOR TRADE TODAY appears in your context)
 Default to WATCH/MONITOR. TRADE only when the new episode clearly re-validates:

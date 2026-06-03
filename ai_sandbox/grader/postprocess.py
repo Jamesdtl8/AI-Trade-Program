@@ -24,27 +24,22 @@ ALERT_2_MAX_GAP_SEC = 900.0
 ALERT_2_FLOAT_MAX = 10_000_000  # raised from 5M — allow alert#2 entries on tighter but slightly larger floats
 
 # Extreme momentum scalp thresholds (no-news override, requires gate_3=PASS_STRONG).
-# When RV hits extreme levels and price has moved significantly from alert-1,
-# the price action itself is the catalyst — we don't need named news for a 7.5% scalp.
+# React at alert 2 — with 500x RV + squeeze, price doesn't need to have already moved far.
 EXTREME_RV_SCALP_THRESHOLD = 500.0   # RV must be ≥500x at any point in the sequence
-EXTREME_RV_SCALP_PRICE_MOVE = 20.0   # price must be ≥20% above alert-1 price
-EXTREME_RV_SCALP_MIN_ALERTS = 3      # at least 3 alerts (build-up required)
+EXTREME_RV_SCALP_PRICE_MOVE = 5.0    # price just needs to be starting to move (was 20%)
+EXTREME_RV_SCALP_MIN_ALERTS = 2      # fire at alert 2 for extreme setups (was 3)
 
 # Pure volume momentum thresholds (no-news, no-squeeze-tags override).
-# RUBI pattern: gate_1=PASS_STRONG, gate_2=FAIL, gate_3=FAIL but sustained extreme RV
-# with every alert price higher than the last — volume IS the catalyst here.
+# RUBI pattern: gate_1=PASS_STRONG, gate_2=FAIL, gate_3=FAIL but sustained extreme RV.
 PURE_VOLUME_MOMENTUM_RV_PEAK = 800.0    # peak RV in the sequence must be ≥800x
-PURE_VOLUME_MOMENTUM_RV_CURRENT = 300.0 # current alert RV must still be ≥300x
-PURE_VOLUME_MOMENTUM_MIN_MOVE = 10.0    # price must be ≥10% above alert-1 price
-PURE_VOLUME_MOMENTUM_MIN_ALERTS = 3     # at least 3 alerts (build-up required)
+PURE_VOLUME_MOMENTUM_RV_CURRENT = 200.0 # current alert RV must still be live (was 300x)
+PURE_VOLUME_MOMENTUM_MIN_MOVE = 5.0     # price just needs to be moving up (was 10%)
+PURE_VOLUME_MOMENTUM_MIN_ALERTS = 2     # fire at alert 2 when RV is this extreme (was 3)
 
 # All-gates-pass explosive override: when ALL four gates pass simultaneously with
-# extreme RV, soft risk caps (e.g. R/S ratio) are overridden — the gate system has
-# already assessed all material risks.  YYGH pattern: 1:50 R/S but G1=PASS_STRONG,
-# G2=PASS (news), G3=PASS_STRONG, G4=PASS, RV 2686x → AI held at WATCH despite
-# unanimous quality signal.
+# extreme RV, soft risk caps (e.g. R/S ratio) are overridden.
 ALL_GATES_PASS_RV_MIN = 1000.0  # peak RV must reach this level
-ALL_GATES_PASS_MIN_ALERTS = 3   # build-up: at least 3 alerts required
+ALL_GATES_PASS_MIN_ALERTS = 2   # fire at alert 2 when all gates confirm (was 3)
 
 _NEWS_SKIP = frozenset({"none", "same", "n/a", "-", ""})
 
@@ -312,19 +307,26 @@ def _latest_float(alerts: list[dict[str, Any]]) -> float | None:
 
 
 def alert_2_trade_allowed(alerts: list[dict[str, Any]]) -> tuple[bool, str | None]:
-    """Alert #2 TRADE requires tight float, strong RV, both momentum labels, short gap."""
+    """Alert #2 TRADE gate — current alert must have MOMENTUM/BREAKOUT (alert 1 label not required).
+
+    High-RV bypass: when alert 2 RV ≥300x, the volume signal alone is enough confirmation —
+    we do not require alert 1 to have a label since it is often a raw first print.
+    """
     if len(alerts) != 2:
         return True, None
     a1, a2 = alerts[0], alerts[1]
-    if _norm_label(a1.get("label")) not in MOMENTUM_LABELS:
-        return False, "alert_2_need_momentum_both"
+    rv_at_2 = float(a2.get("rv") or 0.0)
+    # Alert 2 must show momentum — current alert label is required
     if _norm_label(a2.get("label")) not in MOMENTUM_LABELS:
+        return False, "alert_2_need_momentum_both"
+    # At high RV (≥300x) the volume confirms the move even without a labelled alert 1
+    if rv_at_2 < 300.0 and _norm_label(a1.get("label")) not in MOMENTUM_LABELS:
         return False, "alert_2_need_momentum_both"
     ts1 = float(a1.get("ts") or 0.0)
     ts2 = float(a2.get("ts") or 0.0)
     if ts1 > 0 and ts2 > 0 and (ts2 - ts1) > ALERT_2_MAX_GAP_SEC:
         return False, "alert_2_gap_too_long"
-    if float(a2.get("rv") or 0.0) < ALERT_2_RV_MIN:
+    if rv_at_2 < ALERT_2_RV_MIN:
         return False, "alert_2_rv_too_low"
     fl = _latest_float(alerts)
     if fl is not None and fl > ALERT_2_FLOAT_MAX:

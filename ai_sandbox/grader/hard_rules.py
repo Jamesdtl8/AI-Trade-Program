@@ -321,13 +321,16 @@ def should_send_to_ai(state: dict[str, Any], alert: dict[str, Any]) -> tuple[boo
 
     if alert_count == 2:
         alert_1 = alerts[0]
+        rv_at_2 = float(alert.get("rv") or 0.0)
+        price_rising = price > float(alert_1.get("price") or 0.0) > 0
+        # High-RV bypass: extreme volume (500x+) + rising price is enough signal to evaluate
+        # even without a formal MOMENTUM/BREAKOUT label — react fast to the tape
+        if rv_at_2 >= 500.0 and price_rising:
+            return True, "alert_2_high_rv_bypass"
         if not label_ok_for_grade(alert, alerts):
             return False, "no_momentum_label_at_2"
-        if price <= float(alert_1.get("price") or 0.0):
+        if not price_rising:
             return False, "price_not_higher_than_alert_1"
-        # Require minimum RV at alert 2 — low-RV setups don't have the buying pressure
-        # needed to reach a 7.5% target. Below 50x is noise, not momentum.
-        rv_at_2 = float(alert.get("rv") or 0.0)
         if rv_at_2 < ALERT_2_RV_MIN:
             return False, "alert_2_rv_too_low"
         return True, "alert_2_standard"
