@@ -1415,10 +1415,17 @@ class Engine:
                     return
 
             precision = t212_ai.quantity_precision(t212_code)
-            # Fixed pot target — no balance pre-flight. T212 rejects with
-            # "Insufficient funds" if the account is genuinely empty.
-            # cap_order_buy_quantity below handles per-stock T212 size limits.
-            slot_gbp = config.slot_capital_gbp_for_slot(slot.index)
+            # Shared pool: actual capital deployed in other active slots flows
+            # into this pot's budget. If pot 0 filled £9,500 (capped by T212),
+            # pot 1 gets £14,000 − £9,500 = £4,500 instead of just £4,000.
+            active_deployed_others = sum(
+                s.capital_gbp
+                for s in self.mgr.state.slots
+                if s.state == "ACTIVE" and s.index != slot.index
+            )
+            slot_gbp = config.slot_capital_gbp_for_slot(
+                slot.index, active_deployed_gbp=active_deployed_others
+            )
             capital_usd = slot_gbp * config.GBP_USD_RATE
             base_qty = t212_ai.snap_quantity(capital_usd / entry, precision)
             min_q = t212_ai.minimum_buy_quantity(t212_code)

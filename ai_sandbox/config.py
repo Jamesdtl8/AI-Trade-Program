@@ -437,17 +437,34 @@ def slot_capital_gbp_for_slot(
     cash: dict | None = None,
     active_deployed_gbp: float = 0.0,
 ) -> float:
-    """Fixed capital target for a pot. No live balance check — T212 rejects if truly insufficient.
+    """Capital for this pot, with leftover from other pots flowing in.
 
-    Pot 0 = £10,000 (primary).  Pot 1 = £4,000 (secondary).
-    Each pot is independent: if pot 0's fill is capped by a T212 stock size
-    limit, pot 1 still gets its full £4,000 (and vice versa).
-    ``cap_order_buy_quantity`` in the engine handles per-stock T212 caps.
+    When no other slot is active, each pot uses its own base target
+    (£10,000 for pot 0, £4,000 for pot 1).
+
+    When another slot is already active, this slot receives the remaining
+    shared pool: ``POT_TOTAL_GBP − actual_deployed_by_others``.
+
+    Example:
+      Pot 0 targeted £10,000 but T212 capped it at £9,500.
+      Pot 1 opens → pool = £14,000 − £9,500 = £4,500 (not just £4,000).
+
+    T212 handles any true "Insufficient funds" rejection.
+    ``cap_order_buy_quantity`` handles per-stock size limits.
     """
     try:
-        return float(POT_CAPITALS_GBP[slot_index])
+        base = float(POT_CAPITALS_GBP[slot_index])
     except IndexError:
-        return float(POT_CAPITALS_GBP[-1])
+        base = float(POT_CAPITALS_GBP[-1])
+
+    deployed = float(active_deployed_gbp)
+    if deployed <= 0:
+        # No other slots active — use this slot's own base target.
+        return base
+
+    # Another slot is active; give this slot the remainder of the shared pool.
+    pool = max(0.0, POT_TOTAL_GBP - deployed)
+    return round(pool, 2)
 
 
 def slot_capital_gbp_for_trade(*, db=None, cash: dict | None = None) -> float:
