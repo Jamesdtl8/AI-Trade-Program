@@ -31,10 +31,6 @@ _log = logging.getLogger("ai_sandbox.t212_ai")
 
 _RATE_LOCKS: dict[int, asyncio.Lock] = {}  # one lock per event loop
 _LAST_CALL_MONO: dict[str, float] = {}
-# Global floor: no matter which endpoint, never fire more than 1 request/second
-# to avoid T212's account-level rate limit being hit by the combined load of
-# positions poller + account summary poller + order history scanner.
-_GLOBAL_MIN_GAP = 1.1  # seconds between ANY two requests to T212
 
 # Shared snapshot from ``run_positions_poller`` — single GET /equity/positions
 # producer for the AI account; consumers never hit HTTP here.
@@ -56,15 +52,16 @@ def _lock_for_loop() -> asyncio.Lock:
         _RATE_LOCKS[id(loop)] = lk
     return lk
 _MIN_GAP = {
-    "positions": 2.1,    # was 1.05 — 2 slots don't need sub-second position polling
-    "orders": 1.05,
-    "limit": 2.05,
-    "stop_limit": 2.05,
-    "market": 1.3,
-    "cancel": 1.3,
-    "history_orders": 13.0,  # was 10.2 — give global throttle more breathing room
-    "account": 6.0,          # was 5.05
-    "default": 1.1,          # was 0.6 — match global floor
+    # Gaps match T212's documented per-endpoint rate limits (per-account).
+    "positions":      1.05,   # 1 req/s
+    "orders":         1.05,   # GET /equity/orders/{id} — 1 req/s
+    "limit":          2.05,   # 1 req/2s
+    "stop_limit":     2.05,   # 1 req/2s
+    "market":         1.25,   # 50 req/min → ~1.2s
+    "cancel":         1.25,   # 50 req/min → ~1.2s
+    "history_orders": 10.2,   # 6 req/min → 1 req/10s
+    "account":        5.05,   # 1 req/5s
+    "default":        1.05,
 }
 
 
@@ -281,21 +278,13 @@ def _rate_key(method: str, path: str) -> str:
 
 
 async def _throttle(key: str) -> None:
-    per_key_gap = _MIN_GAP.get(key, _MIN_GAP["default"])
+    gap = _MIN_GAP.get(key, _MIN_GAP["default"])
     async with _lock_for_loop():
-        now = time.monotonic()
-        # Per-endpoint minimum gap
-        last_key = _LAST_CALL_MONO.get(key, 0.0)
-        wait_key = per_key_gap - (now - last_key)
-        # Global floor: never exceed 1 request/second total across all endpoints
-        last_any = _LAST_CALL_MONO.get("_global", 0.0)
-        wait_global = _GLOBAL_MIN_GAP - (now - last_any)
-        wait = max(wait_key, wait_global)
+        last = _LAST_CALL_MONO.get(key, 0.0)
+        wait = gap - (time.monotonic() - last)
         if wait > 0:
             await asyncio.sleep(wait)
-        ts = time.monotonic()
-        _LAST_CALL_MONO[key] = ts
-        _LAST_CALL_MONO["_global"] = ts
+        _LAST_CALL_MONO[key] = time.monotonic()
 
 
 def _auth() -> tuple[str, str]:
@@ -336,8 +325,13 @@ async def request(method: str, path: str, json_body: dict[str, Any] | None = Non
             await asyncio.sleep(1.5 * (attempt + 1))
             continue
         if status == 429:
-            _log.warning("AI T212 rate limited (%s %s) — backing off", method, path)
-            await asyncio.sleep(2.0)
+            # Exponential back-off: 2s, 6s, 18s — avoids hammering a depleted bucket.
+            backoff = 2.0 * (3 ** attempt)
+            _log.warning(
+                "AI T212 rate limited (%s %s) — backing off %.0fs (attempt %d/3)",
+                method, path, backoff, attempt + 1,
+            )
+            await asyncio.sleep(backoff)
             continue
         if 200 <= status < 300:
             return body
@@ -1026,15 +1020,19 @@ async def run_positions_poller() -> None:
         except (T212AIError, Exception) as exc:
             if not isinstance(exc, T212AIError):
                 _log.warning("AI positions poller unexpected error: %s", exc)
+                await asyncio.sleep(2.0)
             elif exc.status == 429:
-                _log.debug("AI positions poller rate limited — keeping last snapshot")
+                # All retries exhausted — bucket still depleted; wait longer before next poll.
+                _log.warning("AI positions poller rate limited (all retries) — pausing 15s")
+                await asyncio.sleep(15.0)
             else:
                 _log.warning(
                     "AI positions poller failed (%s): %s",
                     getattr(exc, "status", "?"),
                     getattr(exc, "body", exc),
                 )
-            await asyncio.sleep(1.0)
+                await asyncio.sleep(2.0)
+            continue
 
 
 def _normalize_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
@@ -1077,7 +1075,9 @@ async def run_account_summary_poller() -> None:
             if not isinstance(exc, T212AIError):
                 _log.warning("AI account summary poller unexpected error: %s", exc)
             elif exc.status == 429:
-                _log.debug("AI account summary poller rate limited — keeping last snapshot")
+                _log.warning("AI account summary poller rate limited (all retries) — pausing 30s")
+                await asyncio.sleep(30.0)
+                continue
             else:
                 _log.warning(
                     "AI account summary poller failed (%s): %s",
