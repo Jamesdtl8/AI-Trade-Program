@@ -454,7 +454,7 @@ class Engine:
             return False
 
         existing = db.fetchone(
-            "SELECT * FROM trades WHERE status='OPEN' AND ticker=? ORDER BY open_ts DESC LIMIT 1",
+            "SELECT * FROM trades WHERE status IN ('OPEN','SELL_PENDING') AND ticker=? ORDER BY open_ts DESC LIMIT 1",
             (tkr,),
         )
         if existing:
