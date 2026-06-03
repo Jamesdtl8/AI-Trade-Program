@@ -9,7 +9,9 @@ from typing import Any
 from .. import ticker_identity
 from . import hard_rules
 
-REENTRY_MIN_ALERTS = 6
+REENTRY_MIN_ALERTS = 6           # standard re-entry: wait for 6 clean new-episode alerts
+REENTRY_MIN_ALERTS_HIGH_RV = 4  # high-RV re-entry: 4 alerts is enough when volume is extreme
+REENTRY_HIGH_RV_THRESHOLD = 500.0  # peak RV must reach this to unlock the lower threshold
 REENTRY_COOLDOWN_SEC = 20 * 60
 REENTRY_RV_MIN = 100.0
 REENTRY_PRICE_EXIT_MULT = 2.0
@@ -32,6 +34,19 @@ def _norm_label(label: str | None) -> str:
     if u.startswith("BTT"):
         return "BTT V"
     return u
+
+
+def _reentry_min_alerts(alerts: list[dict[str, Any]]) -> int:
+    """Return the minimum alert count needed before re-entry grading.
+
+    When the current episode already has peak RV ≥ REENTRY_HIGH_RV_THRESHOLD
+    (extreme volume — volume IS the story), lower the bar from 6 → 4.
+    Standard setups keep the conservative 6-alert requirement.
+    """
+    peak_rv = max((float(a.get("rv") or 0) for a in alerts), default=0.0)
+    if peak_rv >= REENTRY_HIGH_RV_THRESHOLD:
+        return REENTRY_MIN_ALERTS_HIGH_RV
+    return REENTRY_MIN_ALERTS
 
 
 def _scanner_ticker(state: dict[str, Any], scanner_ticker: str | None = None) -> str:
@@ -237,7 +252,7 @@ def reentry_send_block(
         return False, None
 
     alert_count = len(alerts)
-    if alert_count < REENTRY_MIN_ALERTS:
+    if alert_count < _reentry_min_alerts(alerts):
         return True, "reentry_accumulating"
 
     now = float(now_ts if now_ts is not None else time.time())
@@ -276,7 +291,7 @@ def reentry_trade_allowed(
     if not prior:
         return True, None
 
-    if len(alerts) < REENTRY_MIN_ALERTS:
+    if len(alerts) < _reentry_min_alerts(alerts):
         return False, "reentry_min_alerts"
 
     now = float(now_ts if now_ts is not None else time.time())

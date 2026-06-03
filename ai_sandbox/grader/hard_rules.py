@@ -33,7 +33,7 @@ RV_ABSOLUTE_FLOOR = 25.0
 LABEL_OVERRIDE_RV = 100.0
 LABEL_OVERRIDE_PCT = 40.0
 LABEL_OVERRIDE_SQUEEZE_RV = 50.0
-ALERT_2_RV_MIN = 50.0  # Minimum RV to send alert-2 to AI — below this it's not a real mover
+ALERT_2_RV_MIN = 25.0  # Lowered from 50x — catch more alert#2 setups; 25x is still meaningful momentum
 
 PERMANENT_DISQUALIFY = frozenset(
     {
@@ -290,7 +290,7 @@ def should_send_to_ai(state: dict[str, Any], alert: dict[str, Any]) -> tuple[boo
         )
         if blocked:
             return False, block_reason or "reentry_not_ready"
-        if alert_count >= reentry.REENTRY_MIN_ALERTS and st in ("WATCH", "PASS", "WATCHING", "NEW"):
+        if alert_count >= reentry._reentry_min_alerts(alerts) and st in ("WATCH", "PASS", "WATCHING", "NEW"):
             if label_ok_for_grade(alert, alerts) and price_rising_vs_prior(alerts):
                 return True, "reentry_regrade"
         return False, "reentry_not_ready"
