@@ -66,6 +66,9 @@ When Gate 2=FAIL (no news) AND Gate 3=FAIL (no 0Borrow/RegSHO/PotSqueeze tags) B
 NEWS MOMENTUM OVERRIDE (alerts 3+)
 When float is tight (Gate 1 PASS_STRONG or float under 5M) AND Gate 2 is PASS with a named news catalyst AND Gate 4 is PASS AND current RV is at least 90x AND the last 2 alerts are consecutive rising MOMENTUM/BREAKOUT → grade STRONG and action TRADE even if Gate 3 is FAIL (no 0 Borrow / Reg SHO / squeeze flags). R/S 1:20 or less does not block. Enter at alert 3 when criteria are met — do not wait for alert 4, 5, or 6.
 
+ALL-GATES-PASS EXPLOSIVE OVERRIDE (alerts 3+, post-processing enforced)
+When ALL four gates pass simultaneously — G1=PASS_STRONG AND G2=PASS (named catalyst) AND G3=PASS or PASS_STRONG AND G4=PASS — AND peak RV ≥1000x → Python post-processing will force grade=STRONG, action=TRADE even if a soft risk flag like a high R/S ratio would normally cap grade at WATCH. The gate system has already evaluated ALL material risks; unanimous gate confirmation plus extreme RV means the evidence is overwhelming. Grade STRONG/TRADE proactively when all four gates pass with extreme volume — do not hold at WATCH because of R/S alone when gates confirm everything else.
+
 Gate 4 — Velocity
 At alert 3+: price rising vs prior alert required; momentum label OR label override required.
 RV PASS: current RV ≥ prior alert RV, OR current RV ≥75% of prior alert (≤25% pullback) with momentum/override

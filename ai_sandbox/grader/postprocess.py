@@ -37,6 +37,15 @@ PURE_VOLUME_MOMENTUM_RV_PEAK = 800.0    # peak RV in the sequence must be ≥800
 PURE_VOLUME_MOMENTUM_RV_CURRENT = 300.0 # current alert RV must still be ≥300x
 PURE_VOLUME_MOMENTUM_MIN_MOVE = 10.0    # price must be ≥10% above alert-1 price
 PURE_VOLUME_MOMENTUM_MIN_ALERTS = 3     # at least 3 alerts (build-up required)
+
+# All-gates-pass explosive override: when ALL four gates pass simultaneously with
+# extreme RV, soft risk caps (e.g. R/S ratio) are overridden — the gate system has
+# already assessed all material risks.  YYGH pattern: 1:50 R/S but G1=PASS_STRONG,
+# G2=PASS (news), G3=PASS_STRONG, G4=PASS, RV 2686x → AI held at WATCH despite
+# unanimous quality signal.
+ALL_GATES_PASS_RV_MIN = 1000.0  # peak RV must reach this level
+ALL_GATES_PASS_MIN_ALERTS = 3   # build-up: at least 3 alerts required
+
 _NEWS_SKIP = frozenset({"none", "same", "n/a", "-", ""})
 
 
@@ -656,6 +665,41 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
                 "from": grade,
                 "to": "STRONG",
                 "reason": "pure_volume_momentum_override",
+            }
+        )
+        ctx["grade_change_history"] = history
+        grade = "STRONG"
+        action = "TRADE"
+
+    # All-gates-pass explosive override: ALL four gates pass simultaneously AND peak
+    # RV is extreme (≥1000x).  Soft risk caps like R/S ratio are overridden because
+    # the gate system has already evaluated every material risk dimension — unanimous
+    # gate confirmation with extreme volume leaves no credible reason to hold at WATCH.
+    # Does NOT fire on re-entry episodes (additional re-entry guards still apply).
+    if (
+        action in ("MONITOR", "WATCH")
+        and not kr_override
+        and _gate_pass_strong(gates.get("gate_1"))
+        and _gate_passes(gates.get("gate_2"))
+        and _gate_passes(gates.get("gate_3"))
+        and _gate_passes(gates.get("gate_4"), allow_partial=True)
+        and _peak_rv >= ALL_GATES_PASS_RV_MIN
+        and alert_count >= ALL_GATES_PASS_MIN_ALERTS
+        and not reentry.is_reentry_episode(state, scanner_ticker=scanner_tk)
+    ):
+        agp_note = (
+            f"All-gates-pass explosive override: peak RV {_peak_rv:.0f}x — "
+            f"G1=PASS_STRONG + G2=PASS + G3=PASS + G4=PASS — "
+            "soft risk cap overridden by unanimous gate confirmation"
+        )
+        if agp_note not in flags:
+            flags.append(agp_note)
+        history = list(ctx.get("grade_change_history") or [])
+        history.append(
+            {
+                "from": grade,
+                "to": "STRONG",
+                "reason": "all_gates_pass_explosive_override",
             }
         )
         ctx["grade_change_history"] = history
