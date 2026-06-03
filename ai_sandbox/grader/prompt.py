@@ -60,6 +60,9 @@ Gate 3 FAIL alone must NOT block TRADE when NEWS MOMENTUM OVERRIDE applies (belo
 EXTREME MOMENTUM SCALP OVERRIDE (alerts 3+, post-processing enforced)
 When Gate 2=FAIL (no news) BUT Gate 1=PASS_STRONG AND Gate 3=PASS_STRONG AND Gate 4=PASS AND peak RV ≥500x AND price has moved ≥20% from alert-1 price → Python post-processing will force grade=STRONG, action=TRADE regardless of your output. You do NOT need to wait for named news in this scenario. The extreme RV and structural squeeze together ARE the signal. Grade STRONG/TRADE proactively when these conditions are met — do not hold at WATCH and let post-processing do all the work.
 
+PURE VOLUME MOMENTUM OVERRIDE (alerts 3+, post-processing enforced)
+When Gate 2=FAIL (no news) AND Gate 3=FAIL (no 0Borrow/RegSHO/PotSqueeze tags) BUT Gate 1=PASS_STRONG AND Gate 4=PASS AND peak RV ≥800x AND current alert RV ≥300x AND price has moved ≥10% from alert-1 AND every alert price is strictly higher than the last → Python post-processing will force grade=STRONG, action=TRADE. This is the pure after-hours volume panic pattern (e.g. RUBI: RV 8756x, +70%, no catalyst, no squeeze — just extreme tape). The volume IS the catalyst. Grade STRONG/TRADE proactively when peak RV ≥800x, current RV ≥300x, prices only going up, tight float — do not hold at WATCH waiting for news that will never come.
+
 NEWS MOMENTUM OVERRIDE (alerts 3+)
 When float is tight (Gate 1 PASS_STRONG or float under 5M) AND Gate 2 is PASS with a named news catalyst AND Gate 4 is PASS AND current RV is at least 90x AND the last 2 alerts are consecutive rising MOMENTUM/BREAKOUT → grade STRONG and action TRADE even if Gate 3 is FAIL (no 0 Borrow / Reg SHO / squeeze flags). R/S 1:20 or less does not block. Enter at alert 3 when criteria are met — do not wait for alert 4, 5, or 6.
 
@@ -80,7 +83,7 @@ Whale SELL in sequence → add to risk_flags, do not auto-downgrade
 Borrow confirmation alert fired → strengthens Gate 3, note CTB value
 
 ALERT 2 INITIAL GRADE (exactly 2 alerts in history)
-Python has already verified RV ≥50x at alert 2 before calling you — this is a real mover.
+Python has already verified RV ≥25x at alert 2 before calling you — this is a real mover.
 This is an early entry look — be open to STRONG when structure is exceptional.
 STRONG at alert 2: Gate1 PASS or stronger + Gate3 PASS or stronger + Gate4 PASS or PARTIAL + price rising + MOMENTUM/BREAKOUT label. Gate2 may be PARTIAL or FAIL (override applies). Do not require three alerts for a STRONG if float is tight and squeeze flags are present.
 WATCH at alert 2: Gate1 PASS or PARTIAL + Gate4 at least PARTIAL + at least one of Gate2/Gate3 at PASS or PARTIAL
@@ -103,7 +106,7 @@ When PRIOR TRADE TODAY is present in the user message, this is a new episode aft
 - Default WATCH/MONITOR or PASS — do not TRADE unless the new episode clearly re-validates.
 - Require 6+ alerts in this episode before TRADE (Python enforces before you are called).
 - RV must be ≥ 100x on the trigger alert — no 90x news waiver on re-entry.
-- Price must not exceed 1.5× the prior exit (chase guard).
+- Price must not exceed 2.0× the prior exit (chase guard).
 - REV V / NBREAK in the last 6 alerts blocks TRADE unless price reclaimed the pre-dip high AND RV ≥ 100x.
 - Need 3 consecutive rising MOMENTUM/BREAKOUT alerts at the end of the episode.
 - Mention the prior trade outcome in summary when explaining PASS/MONITOR on re-entry.

@@ -1,29 +1,23 @@
 """Trailing stop ladder for position manager (New System; hard stop from config).
 
-Trail arms permanently on first +7.5% peak gain — it does not turn off if price
-pulls back below +7.5%. Tier width is keyed off peak gain, not current P&L.
+Trail arms permanently on first +10% peak gain — it does not turn off if price
+pulls back below +10%. Tier width is keyed off peak gain, not current P&L.
 
 Tiers (peak gain from entry → trail % below peak):
-  +7.5% to +10%   → 5% trail  (min lock-in: ~2.1% from entry)
-  +10%  to +20%   → 7% trail  (min lock-in: ~2.3% at 10% peak)
-  +20%  to +40%   → 10% trail
-  +40%  to +60%   → 15% trail
-  +60%  to +100%  → 20% trail
+  +10% to +25%    → 10% trail (arms at break-even; wider early tier for runners)
+  +25% to +50%    → 13% trail
+  +50% to +60%    → 15% trail
+  +60% to +100%   → 20% trail
   +100% to +150%  → 25% trail
   +150% to +200%  → 30% trail
   +200% to +300%  → 35% trail
   +300% and above → 40% trail
 
 TIER-BOUNDARY CONTINUITY:
-Each tier boundary is chosen so the trail stop NEVER drops when peak crosses
-into a new tier. The minimum stop at the bottom of each tier always equals or
-exceeds the stop at the top of the previous tier.
-
-At exactly +10% peak:
-  Previous tier (5% trail): stop = 10% peak × 0.95 = entry × 1.0 × 1.10 × 0.95 = entry × 1.045
-  New tier     (7% trail):  stop = 10% peak × 0.93 = entry × 1.10 × 0.93 = entry × 1.023
-  → PROBLEM: stop dropped. We fix this by never letting the computed stop fall
-    below the running highest_stop seen so far (tracked in position_monitor).
+Tier boundaries can cause the raw trail stop to step DOWN when crossing into a
+wider tier. This is prevented by the running highest_stop tracked in
+position_monitor — the returned stop is never less than the prior highest stop,
+so the stop level only ever ratchets upward.
 
 Hard stop: entry × (1 - hard_stop_pct/100). Always active, provides an absolute floor.
 """
@@ -32,7 +26,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-TRAIL_ARM_PCT = 7.5
+TRAIL_ARM_PCT = 10.0
 
 
 def peak_gain_pct(entry_price: float, highest_price: float) -> float:
@@ -44,18 +38,16 @@ def peak_gain_pct(entry_price: float, highest_price: float) -> float:
 def get_trail_pct(peak_gain_pct: float) -> Optional[float]:
     """Trail width (%) from peak gain achieved (not current P&L).
 
-    Tiers are tuned so a 7.5%+ winner rides as long as possible while
-    protecting locked-in gains. Wider early tier (5% vs old 3%) keeps us
-    in 8-15% moves without exiting too early.
+    Tiers are widened vs prior version to give genuine runners more room to
+    breathe before locking them out. Trail only arms at +10% so we don't trail
+    too early on moves that haven't confirmed direction.
     """
     if peak_gain_pct < TRAIL_ARM_PCT:
         return None
-    if peak_gain_pct < 10:
-        return 5.0   # was 3% — widened so we catch 8-15% moves without haircut
-    if peak_gain_pct < 20:
-        return 7.0   # was 5%
-    if peak_gain_pct < 40:
-        return 10.0
+    if peak_gain_pct < 25:
+        return 10.0  # was 5% (7.5-10%) + 7% (10-20%); wider so runners don't stop on first dip
+    if peak_gain_pct < 50:
+        return 13.0  # was 10% (20-40%); wider to hold through mid-move consolidation
     if peak_gain_pct < 60:
         return 15.0
     if peak_gain_pct < 100:
@@ -84,7 +76,7 @@ def calculate_stop(
     is never less than this, preventing tier-boundary backward steps where a
     wider trail on a new tier would otherwise push the stop down.
 
-    Trail arms once peak gain reaches +7.5% and stays armed for the trade.
+    Trail arms once peak gain reaches +10% and stays armed for the trade.
     """
     del current_gain_pct  # peak-driven; monitor still passes live P&L for display
     hard_stop = round(entry_price * (1.0 - hard_stop_pct / 100.0), 6)

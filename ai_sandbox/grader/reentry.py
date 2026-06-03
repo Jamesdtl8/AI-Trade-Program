@@ -12,7 +12,7 @@ from . import hard_rules
 REENTRY_MIN_ALERTS = 6
 REENTRY_COOLDOWN_SEC = 20 * 60
 REENTRY_RV_MIN = 100.0
-REENTRY_PRICE_EXIT_MULT = 1.5
+REENTRY_PRICE_EXIT_MULT = 2.0
 REENTRY_DIP_WINDOW = 6
 REENTRY_MOMENTUM_STREAK = 3
 DIP_LABELS = {"REV V", "NBREAK", "BTT V"}
@@ -155,8 +155,8 @@ def format_prior_trade_block(prior: dict[str, Any]) -> list[str]:
             f"Re-entry requires: {REENTRY_MIN_ALERTS}+ alerts in this new episode, "
             f"{int(REENTRY_COOLDOWN_SEC / 60)} min cooldown after exit, "
             f"RV ≥ {REENTRY_RV_MIN:.0f}x (no 90x news waiver), "
-            f"price must not exceed prior exit ${float(exit_p or 0):.2f} (no chasing), "
-            f"and ≤ {REENTRY_PRICE_EXIT_MULT:.1f}× prior exit, "
+            f"price must not exceed {REENTRY_PRICE_EXIT_MULT:.1f}× prior exit "
+            f"(${float(exit_p or 0) * REENTRY_PRICE_EXIT_MULT:.2f}), "
             f"no unrecovered REV V/NBREAK dip in the last {REENTRY_DIP_WINDOW} alerts."
         ),
         "Default to WATCH/MONITOR or PASS unless the new episode clearly re-validates momentum.",
@@ -210,8 +210,13 @@ def rising_momentum_streak(alerts: list[dict[str, Any]], *, n: int) -> bool:
 
 
 def _price_chasing_prior_exit(prior: dict[str, Any], price: float) -> bool:
+    """Block re-entry only when price has already extended beyond REENTRY_PRICE_EXIT_MULT×
+    the prior exit. Prices between exit_price and exit_price * mult are allowed so that
+    continuation runners (e.g. exited at $1.32, now at $2.15 on the way to $3.40) can
+    still be re-entered provided all other momentum/RV gates pass.
+    """
     exit_price = float(prior.get("exit_price") or 0)
-    return exit_price > 0 and price > exit_price
+    return exit_price > 0 and price > exit_price * REENTRY_PRICE_EXIT_MULT
 
 
 def reentry_send_block(
@@ -240,11 +245,8 @@ def reentry_send_block(
     if exit_ts > 0 and (now - exit_ts) < REENTRY_COOLDOWN_SEC:
         return True, "reentry_cooldown"
 
-    exit_price = float(prior.get("exit_price") or 0)
     price = float(alert.get("price") or alerts[-1].get("price") or 0)
     if _price_chasing_prior_exit(prior, price):
-        return True, "reentry_above_exit"
-    if exit_price > 0 and price > exit_price * REENTRY_PRICE_EXIT_MULT:
         return True, "reentry_extended"
 
     if has_recent_dip(alerts) and not price_recovered_above_pre_dip_peak(alerts):
@@ -282,11 +284,8 @@ def reentry_trade_allowed(
     if exit_ts > 0 and (now - exit_ts) < REENTRY_COOLDOWN_SEC:
         return False, "reentry_cooldown"
 
-    exit_price = float(prior.get("exit_price") or 0)
     price = float(alerts[-1].get("price") or 0)
     if _price_chasing_prior_exit(prior, price):
-        return False, "reentry_above_exit"
-    if exit_price > 0 and price > exit_price * REENTRY_PRICE_EXIT_MULT:
         return False, "reentry_extended"
 
     cur_rv = float(alerts[-1].get("rv") or 0)
