@@ -1415,6 +1415,17 @@ class Engine:
                     return
 
             precision = t212_ai.quantity_precision(t212_code)
+            # Fetch a fresh cash snapshot so we never overshoot the account balance.
+            # cash_snapshot() returns None on startup (poller not yet warmed up) so
+            # do a direct HTTP call here to guarantee a real balance figure.
+            live_cash = t212_ai.cash_snapshot()
+            if live_cash is None or live_cash.get("free") is None:
+                try:
+                    raw = await t212_ai.request("GET", "/equity/account/summary")
+                    live_cash = t212_ai._normalize_account_summary(raw) if isinstance(raw, dict) else None
+                except Exception as _cash_exc:
+                    _log.warning("cash fetch before trade sizing failed: %s", _cash_exc)
+                    live_cash = None
             # Sum capital already deployed in OTHER active slots (not this one).
             active_deployed_others = sum(
                 s.capital_gbp
@@ -1422,8 +1433,14 @@ class Engine:
                 if s.state == "ACTIVE" and s.index != slot.index
             )
             slot_gbp = config.slot_capital_gbp_for_slot(
-                slot.index, db=db, active_deployed_gbp=active_deployed_others
+                slot.index, db=db, cash=live_cash, active_deployed_gbp=active_deployed_others
             )
+            if slot_gbp <= 0:
+                _log.info(
+                    "rejecting OPEN %s — no deployable cash (live balance unavailable or zero)",
+                    ticker,
+                )
+                return
             capital_usd = slot_gbp * config.GBP_USD_RATE
             base_qty = t212_ai.snap_quantity(capital_usd / entry, precision)
             min_q = t212_ai.minimum_buy_quantity(t212_code)
