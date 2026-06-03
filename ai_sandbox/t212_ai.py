@@ -31,6 +31,10 @@ _log = logging.getLogger("ai_sandbox.t212_ai")
 
 _RATE_LOCKS: dict[int, asyncio.Lock] = {}  # one lock per event loop
 _LAST_CALL_MONO: dict[str, float] = {}
+# Global floor: no matter which endpoint, never fire more than 1 request/second
+# to avoid T212's account-level rate limit being hit by the combined load of
+# positions poller + account summary poller + order history scanner.
+_GLOBAL_MIN_GAP = 1.1  # seconds between ANY two requests to T212
 
 # Shared snapshot from ``run_positions_poller`` — single GET /equity/positions
 # producer for the AI account; consumers never hit HTTP here.
@@ -52,15 +56,15 @@ def _lock_for_loop() -> asyncio.Lock:
         _RATE_LOCKS[id(loop)] = lk
     return lk
 _MIN_GAP = {
-    "positions": 1.05,
+    "positions": 2.1,    # was 1.05 — 2 slots don't need sub-second position polling
     "orders": 1.05,
     "limit": 2.05,
     "stop_limit": 2.05,
     "market": 1.3,
     "cancel": 1.3,
-    "history_orders": 10.2,
-    "account": 5.05,
-    "default": 0.6,
+    "history_orders": 13.0,  # was 10.2 — give global throttle more breathing room
+    "account": 6.0,          # was 5.05
+    "default": 1.1,          # was 0.6 — match global floor
 }
 
 
@@ -277,13 +281,21 @@ def _rate_key(method: str, path: str) -> str:
 
 
 async def _throttle(key: str) -> None:
-    gap = _MIN_GAP.get(key, _MIN_GAP["default"])
+    per_key_gap = _MIN_GAP.get(key, _MIN_GAP["default"])
     async with _lock_for_loop():
-        last = _LAST_CALL_MONO.get(key, 0.0)
-        wait = gap - (time.monotonic() - last)
+        now = time.monotonic()
+        # Per-endpoint minimum gap
+        last_key = _LAST_CALL_MONO.get(key, 0.0)
+        wait_key = per_key_gap - (now - last_key)
+        # Global floor: never exceed 1 request/second total across all endpoints
+        last_any = _LAST_CALL_MONO.get("_global", 0.0)
+        wait_global = _GLOBAL_MIN_GAP - (now - last_any)
+        wait = max(wait_key, wait_global)
         if wait > 0:
             await asyncio.sleep(wait)
-        _LAST_CALL_MONO[key] = time.monotonic()
+        ts = time.monotonic()
+        _LAST_CALL_MONO[key] = ts
+        _LAST_CALL_MONO["_global"] = ts
 
 
 def _auth() -> tuple[str, str]:
