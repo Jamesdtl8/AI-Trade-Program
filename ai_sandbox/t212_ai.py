@@ -29,7 +29,7 @@ from . import config
 
 _log = logging.getLogger("ai_sandbox.t212_ai")
 
-_RATE_LOCKS: dict[int, asyncio.Lock] = {}  # one lock per event loop
+_RATE_LOCKS: dict[str, asyncio.Lock] = {}  # one lock per rate-key (not per loop)
 _LAST_CALL_MONO: dict[str, float] = {}
 
 # Shared snapshot from ``run_positions_poller`` — single GET /equity/positions
@@ -44,12 +44,17 @@ _ACCOUNT_CACHE: dict[str, Any] | None = None
 _ACCOUNT_CACHE_MONO: float = 0.0
 
 
-def _lock_for_loop() -> asyncio.Lock:
-    loop = asyncio.get_running_loop()
-    lk = _RATE_LOCKS.get(id(loop))
+def _lock_for_key(key: str) -> asyncio.Lock:
+    """Per-rate-key lock so each endpoint throttles independently.
+
+    The old implementation used a single per-event-loop lock, which meant
+    history_orders holding the lock for 10s would block the positions throttle
+    entirely — causing bursts when it finally released.
+    """
+    lk = _RATE_LOCKS.get(key)
     if lk is None:
         lk = asyncio.Lock()
-        _RATE_LOCKS[id(loop)] = lk
+        _RATE_LOCKS[key] = lk
     return lk
 _MIN_GAP = {
     # Gaps match T212's documented per-endpoint rate limits (per-account).
@@ -279,7 +284,7 @@ def _rate_key(method: str, path: str) -> str:
 
 async def _throttle(key: str) -> None:
     gap = _MIN_GAP.get(key, _MIN_GAP["default"])
-    async with _lock_for_loop():
+    async with _lock_for_key(key):
         last = _LAST_CALL_MONO.get(key, 0.0)
         wait = gap - (time.monotonic() - last)
         if wait > 0:
