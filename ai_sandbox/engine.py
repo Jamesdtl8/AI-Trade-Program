@@ -321,6 +321,18 @@ class Engine:
             await self.mgr.force_reset_slot(slot_obj)
         _log.warning("external trade reconcile id=%s slot=%s reason=%s", trade_id, slot_ix, reason)
 
+    async def _release_stale_slot(self, slot: Slot, *, reason: str) -> None:
+        """Free ACTIVE/SELL_PENDING slot when SQL trade is no longer OPEN (or missing)."""
+        await self._stop_monitor_for_slot_ix(int(slot.index))
+        await self.mgr.force_reset_slot(slot)
+        _log.warning(
+            "AI RECONCILE released stale slot=%s t212=%s trade_id=%s (%s)",
+            slot.index,
+            slot.ticker,
+            slot.trade_id,
+            reason,
+        )
+
     async def _try_activate_monitored_trade(
         self,
         row: dict[str, Any],
@@ -332,6 +344,7 @@ class Engine:
         tid = int(row["id"])
         s_ix = int(row["slot"])
         slot_o = self.mgr.state.slots[s_ix]
+        await self._stop_monitor_for_slot_ix(s_ix)
         t212_tkr = str(row["ticker"] or "").strip().upper()
 
         db_qty = float(row.get("quantity") or 0.0)
@@ -792,19 +805,38 @@ class Engine:
                             "SELECT id, status, open_ts FROM trades WHERE id=?",
                             (int(sl.trade_id),),
                         )
-                        if not row_open or str(row_open["status"] or "").upper() != "OPEN":
-                            _log.warning(
-                                "AI RECONCILE ghost ACTIVE slot=%s t212=%s trade_id=%s (missing OPEN DB row) — clearing",
-                                sl.index,
-                                tkr_sl,
-                                sl.trade_id,
-                            )
-                            await self._close_open_trade_external(
-                                trade_id=int(sl.trade_id),
-                                slot_ix=int(sl.index),
-                                slot_obj=sl,
-                                reason="state_drift:slot_active_without_open_db_trade",
-                            )
+                        trade_st = (
+                            str(row_open["status"] or "").upper() if row_open else "MISSING"
+                        )
+                        if trade_st != "OPEN":
+                            qty_b_stale = broker_by_tkr.get(tkr_sl, 0.0)
+                            if qty_b_stale <= 1e-6:
+                                if trade_st == "SELL_PENDING" and sl.trade_id:
+                                    try:
+                                        from .position_monitor import (
+                                            _try_confirm_close_from_broker,
+                                        )
+
+                                        await _try_confirm_close_from_broker(
+                                            int(sl.trade_id), tkr_sl
+                                        )
+                                    except Exception:
+                                        _log.exception(
+                                            "reconcile confirm stale SELL_PENDING trade=%s",
+                                            sl.trade_id,
+                                        )
+                                await self._release_stale_slot(
+                                    sl,
+                                    reason=f"state_drift:slot_{sl.state.lower()}_trade_{trade_st.lower()}",
+                                )
+                            else:
+                                _log.warning(
+                                    "AI RECONCILE slot=%s trade_id=%s status=%s but broker still long %.4f — awaiting fill",
+                                    sl.index,
+                                    sl.trade_id,
+                                    trade_st,
+                                    qty_b_stale,
+                                )
                             had_fast = True
                             continue
 
