@@ -708,6 +708,46 @@ def apply_rules(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]
         grade = "STRONG"
         action = "TRADE"
 
+    # Catalyst + extreme volume override: G2=PASS (named catalyst) + G1=PASS_STRONG + G4=PASS
+    # but G3=FAIL (no formal squeeze tags).  This is the VIVK pattern — when you have
+    # a real catalyst driving volume (G2=PASS) + tight float (G1=PASS_STRONG) + velocity
+    # (G4=PASS) + extreme RV, the absence of squeeze tags does NOT mean don't trade.
+    # In fact this is a stronger signal than PVM (which fires on G2=FAIL setups) because
+    # you have both a fundamental reason AND extreme tape confirmation.
+    CATALYST_EXTREME_RV_THRESHOLD = 500.0
+    CATALYST_EXTREME_RV_MIN_ALERTS = 2
+    CATALYST_EXTREME_RV_PRICE_MOVE = 5.0
+    if (
+        action in ("MONITOR", "WATCH")
+        and not kr_override
+        and _gate_pass_strong(gates.get("gate_1"))
+        and _gate_passes(gates.get("gate_2"))
+        and not _gate_passes(gates.get("gate_3"))
+        and _gate_passes(gates.get("gate_4"), allow_partial=True)
+        and _peak_rv >= CATALYST_EXTREME_RV_THRESHOLD
+        and _px_move_pct >= CATALYST_EXTREME_RV_PRICE_MOVE
+        and alert_count >= CATALYST_EXTREME_RV_MIN_ALERTS
+        and not reentry.is_reentry_episode(state, scanner_ticker=scanner_tk)
+    ):
+        cexrv_note = (
+            f"Catalyst + extreme volume override: peak RV {_peak_rv:.0f}x, "
+            f"+{_px_move_pct:.0f}% from alert-1 — G1=PASS_STRONG + G2=PASS (catalyst) + "
+            "G4=PASS; G3=FAIL (no squeeze tags) overridden by catalyst + volume combination"
+        )
+        if cexrv_note not in flags:
+            flags.append(cexrv_note)
+        history = list(ctx.get("grade_change_history") or [])
+        history.append(
+            {
+                "from": grade,
+                "to": "STRONG",
+                "reason": "catalyst_extreme_rv_override",
+            }
+        )
+        ctx["grade_change_history"] = history
+        grade = "STRONG"
+        action = "TRADE"
+
     # The alert-2 dual-MOMENTUM guard applies to ALL alert-2 TRADE decisions,
     # including reentry episodes. A reentry at alert 2 has even less track record
     # than a fresh episode — if alert 1 had no MOMENTUM label you're entering blind.

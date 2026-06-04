@@ -694,6 +694,9 @@ class Engine:
                         for p in config.UNCONFIRMED_CLOSE_REASON_PREFIXES
                     ):
                         continue
+                    # Skip CLOSED trades that already have a confirmed P&L — no need to re-poll
+                    if st == "CLOSED" and row_d.get("pnl_gbp") is not None:
+                        continue
                     oid = str(row_d.get("t212_close_order_id") or "").strip()
                     tkr = str(row_d.get("ticker") or "").strip()
                     if not oid or not tkr:
