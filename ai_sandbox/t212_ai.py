@@ -999,17 +999,45 @@ async def run_positions_poller() -> None:
     All monitors, Flask bridges, reconcilers, and fills read the shared snapshot via
     :func:`get_positions` (never performs HTTP).
 
-    Uses the same ``request`` throttle key as before (~1 req/s per API key); the main
-    trading bot uses ``Trading_AI.t212`` with different credentials — independent limits.
+    Poll rate adapts to market phase and open-position count:
+      - Open positions present          → 1s (full rate, need live tracking)
+      - No positions, market active     → 10s (light check for orphan reconcile)
+      - No positions, market closed     → 60s (maintain stale cache, burn no budget)
     """
+    from . import db as _db
+
     _log.info("AI T212 positions poller started (single producer for /equity/positions)")
+    _consecutive_429s = 0
     while True:
         if not config.t212_credentials_ok():
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(5.0)
             continue
         if not config.trading_enabled():
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(5.0)
             continue
+
+        # Adaptive sleep before next poll
+        phase = config.market_phase()
+        market_live = phase in ("pre", "regular", "after")
+        has_open = bool(
+            _db.fetchone(
+                "SELECT 1 FROM trades WHERE status IN ('OPEN','SELL_PENDING') LIMIT 1"
+            )
+        )
+        if has_open:
+            inter_poll_s = 1.0          # live position — full rate
+        elif market_live:
+            inter_poll_s = 10.0         # market open but flat — light check
+        else:
+            inter_poll_s = 60.0         # market closed and flat — minimal polling
+
+        # Exponential backoff if we've been 429'd repeatedly
+        if _consecutive_429s > 0:
+            backoff = min(60.0, inter_poll_s * (2 ** _consecutive_429s))
+            await asyncio.sleep(backoff)
+        else:
+            await asyncio.sleep(inter_poll_s)
+
         try:
             res = await request("GET", "/equity/positions")
             parsed = _positions_from_body(res)
@@ -1017,14 +1045,19 @@ async def run_positions_poller() -> None:
                 global _POSITIONS_CACHE, _POSITIONS_CACHE_MONO
                 _POSITIONS_CACHE = parsed
                 _POSITIONS_CACHE_MONO = time.monotonic()
+            _consecutive_429s = 0  # reset on success
         except (T212AIError, Exception) as exc:
             if not isinstance(exc, T212AIError):
                 _log.warning("AI positions poller unexpected error: %s", exc)
                 await asyncio.sleep(2.0)
             elif exc.status == 429:
-                # All retries exhausted — bucket still depleted; wait longer before next poll.
-                _log.warning("AI positions poller rate limited (all retries) — pausing 15s")
-                await asyncio.sleep(15.0)
+                _consecutive_429s += 1
+                pause = min(120.0, 15.0 * _consecutive_429s)
+                _log.warning(
+                    "AI positions poller rate limited (all retries, streak=%d) — pausing %.0fs",
+                    _consecutive_429s, pause,
+                )
+                await asyncio.sleep(pause)
             else:
                 _log.warning(
                     "AI positions poller failed (%s): %s",

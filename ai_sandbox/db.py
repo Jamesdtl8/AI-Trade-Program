@@ -431,6 +431,8 @@ def insert(sql: str, params: tuple) -> int:
 
 
 def log_alert(ticker: str | None, atype: str, raw: str, parsed: dict[str, Any] | None) -> int:
+    if not ticker or not str(ticker).strip():
+        return 0  # silently drop null/empty-ticker alerts (heartbeats, malformed pings)
     return insert(
         "INSERT INTO alerts(ts, ticker, type, raw, parsed_json) VALUES(?,?,?,?,?)",
         (time.time(), ticker, atype, raw, json.dumps(parsed) if parsed else None),
