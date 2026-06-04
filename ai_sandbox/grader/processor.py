@@ -277,10 +277,17 @@ async def process_scanner_alert(
     if st == "DISQUALIFIED":
         prior = list(st_row.get("alerts") or [])
         probe = prior + [alert_snapshot(alert)]
-        if hard_rules.is_recoverable_disqualify(disqual) and hard_rules.label_ok_for_grade(
+        rv_now = float(alert.get("rv") or 0.0)
+        # rv_too_low is recoverable when a later alert arrives with genuine momentum RV.
+        # Reset the alert history so tracking starts fresh from this new high-RV print.
+        rv_recovered = disqual == "rv_too_low" and rv_now >= hard_rules.ALERT_2_RV_MIN
+        if (hard_rules.is_recoverable_disqualify(disqual) or rv_recovered) and hard_rules.label_ok_for_grade(
             alert, probe
         ):
-            ticker_state.update(tk, {"state": "WATCHING", "disqualify_reason": None})
+            reset_payload: dict[str, Any] = {"state": "WATCHING", "disqualify_reason": None}
+            if rv_recovered:
+                reset_payload["alerts"] = []
+            ticker_state.update(tk, reset_payload)
             st_row = ticker_state.get_or_create(tk)
             st = "WATCHING"
         else:
