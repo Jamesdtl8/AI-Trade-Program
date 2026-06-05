@@ -106,7 +106,7 @@ def build_trade_message(
     if risk_flags:
         lines.append(f"⚠️ {', '.join(str(f) for f in risk_flags[:4])}")
 
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
 
 
 async def post_trade_signal(
