@@ -29,8 +29,6 @@ def _parsed_alert(row: dict[str, Any]) -> dict[str, Any]:
 def sync_ticker_from_db(ticker: str, *, day0: float | None = None) -> dict[str, Any] | None:
     """Rebuild accumulated alerts in ticker_states from SQLite alert rows."""
     tk = ticker.upper()
-    if db.t212_blacklist_get(tk):
-        return None
 
     start = float(day0 if day0 is not None else config.uk_day_start_ts())
     rows = db.fetchall(
@@ -107,7 +105,7 @@ def list_backfill_candidates(*, day0: float | None = None) -> list[dict[str, Any
     out: list[dict[str, Any]] = []
     for row in tickers:
         tk = str(row["ticker"] or "").strip().upper()
-        if not tk or db.t212_blacklist_get(tk):
+        if not tk:
             continue
         st_row = sync_ticker_from_db(tk, day0=start)
         if not st_row:
@@ -239,6 +237,14 @@ async def run_backfill(engine: Any) -> int:
                 item["why"],
             )
             if decision.get("decision") == "TRADE" and hasattr(engine, "_try_open_trade"):
+                try:
+                    from .. import discord_notifier
+                    import asyncio as _asyncio
+                    _asyncio.create_task(
+                        discord_notifier.post_trade_signal(tk, item["alert"], decision)
+                    )
+                except Exception:
+                    _log.exception("discord signal failed (backfill) for %s", tk)
                 await engine._try_open_trade(
                     tk,
                     item["alert"],
