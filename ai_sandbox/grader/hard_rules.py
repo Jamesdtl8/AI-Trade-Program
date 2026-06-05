@@ -12,8 +12,8 @@ REGRADE_ELIGIBLE_STATES = frozenset({"WATCH", "PASS", "WATCHING", "PENDING_AI"})
 MC_LIMIT = 100_000_000
 PRICE_MIN = 0.10
 RV_MIN = 5.0  # Raised from 1x — sub-5x is noise, not momentum
-MOMENTUM_LABELS = {"MOMENTUM", "BREAKOUT"}
-WEAK_LABELS = {"NBREAK", "REV V"}
+MOMENTUM_LABELS = {"MOMENTUM", "BREAKOUT", "NBREAK", "HUGE"}  # NBREAK = New Break; HUGE = large momentum surge
+WEAK_LABELS = {"REV V"}
 SQUEEZE_TAGS = {
     "0Borrow",
     "0 Borrow",
@@ -58,6 +58,8 @@ def _norm_label(label: str | None) -> str | None:
         return "BREAKOUT"
     if u.startswith("NBREAK"):
         return "NBREAK"
+    if u.startswith("HUGE"):
+        return "HUGE"
     if u.startswith("REV"):
         return "REV V"
     if u.startswith("BTT"):
@@ -73,9 +75,13 @@ def _alert_tags(alert: dict[str, Any]) -> set[str]:
 
 
 def is_nbreak_event(alert: dict[str, Any]) -> bool:
+    """True only for genuine reversal/failed-move labels at alert #3+.
+    NBREAK = New Break (continuation to a new high) — NOT a reversal, do not block it.
+    Only REV V and BTT V indicate price is fading back down.
+    """
     rank = alert.get("rank") or alert.get("alert_number")
     label = _norm_label(alert.get("label"))
-    return rank is not None and int(rank) >= 3 and label == "NBREAK"
+    return rank is not None and int(rank) >= 3 and label in ("REV V", "BTT V")
 
 
 def is_recoverable_disqualify(reason: str | None) -> bool:
@@ -277,10 +283,6 @@ def should_send_to_ai(state: dict[str, Any], alert: dict[str, Any]) -> tuple[boo
     price = float(alert.get("price") or 0.0)
     st = str(state.get("state") or "NEW")
 
-    ready, why = watchlist_regrade_ready(state, alert)
-    if ready:
-        return True, why or "watchlist_regrade"
-
     if reentry.is_reentry_episode(state, scanner_ticker=state.get("ticker")):
         blocked, block_reason = reentry.reentry_send_block(
             state,
@@ -295,47 +297,25 @@ def should_send_to_ai(state: dict[str, Any], alert: dict[str, Any]) -> tuple[boo
                 return True, "reentry_regrade"
         return False, "reentry_not_ready"
 
-    if alert_count >= 4 and st in REGRADE_ELIGIBLE_STATES:
-        if label_ok_for_grade(alert, alerts) and price_rising_vs_prior(alerts):
-            return True, "continuation_regrade"
-        # In WATCH state, re-evaluate every strong MOMENTUM/BREAKOUT print even on a micro-dip —
-        # the system is already watching; don't miss a re-acceleration by skipping a 1-tick pullback.
-        if st == "WATCH":
-            norm_label = str(alert.get("label") or "").strip().upper()
-            is_momentum = norm_label.startswith("MOMENTUM") or norm_label.startswith("BREAKOUT")
-            rv_val = float(alert.get("rv") or 0)
-            cur_px = float(alerts[-1].get("price") or 0)
-            prev_px = float(alerts[-2].get("price") or 0) if len(alerts) >= 2 else 0
-            price_not_collapsed = prev_px <= 0 or cur_px >= prev_px * 0.95
-            if is_momentum and rv_val >= LABEL_OVERRIDE_RV and price_not_collapsed:
-                return True, "watch_momentum_regrade"
-        return False, "not_ready"
-
-    if alert_count == 3:
-        if not label_ok_for_grade(alert, alerts):
-            return False, "no_momentum_label_at_3"
-        alert_2 = alerts[1]
-        if price <= float(alert_2.get("price") or 0.0):
-            return False, "price_not_higher_than_alert_2"
-        return True, "alert_3_standard"
-
     if alert_count == 2:
         alert_1 = alerts[0]
         rv_at_2 = float(alert.get("rv") or 0.0)
         price_rising = price > float(alert_1.get("price") or 0.0) > 0
-        # High-RV bypass: extreme volume (500x+) + rising price is enough signal to evaluate
-        # even without a formal MOMENTUM/BREAKOUT label — react fast to the tape
-        if rv_at_2 >= 500.0 and price_rising:
-            return True, "alert_2_high_rv_bypass"
-        if not label_ok_for_grade(alert, alerts):
-            return False, "no_momentum_label_at_2"
         if not price_rising:
             return False, "price_not_higher_than_alert_1"
-        if rv_at_2 < ALERT_2_RV_MIN:
-            return False, "alert_2_rv_too_low"
-        return True, "alert_2_standard"
+        if label_ok_for_grade(alert, alerts) or rv_at_2 >= LABEL_OVERRIDE_RV:
+            return True, "alert_2_reactive"
+        return False, "alert_2_no_reactive_signal"
 
     if alert_count == 1:
         return False, "alert_1_accumulating"
+
+    if alert_count >= 3 and st in REGRADE_ELIGIBLE_STATES:
+        rv_now = float(alert.get("rv") or 0.0)
+        if label_ok_for_grade(alert, alerts) and price_rising_vs_prior(alerts):
+            return True, "reactive_regrade"
+        if rv_now >= 500.0 and price > 0:
+            return True, "extreme_rv_regrade"
+        return False, "not_ready"
 
     return False, "not_ready"

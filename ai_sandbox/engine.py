@@ -1177,19 +1177,9 @@ class Engine:
 
         if ticker:
             if t212_ai.instrument_map_ready() and t212_ai.resolve_ticker(ticker) is None:
-                try:
-                    from .grader import state as ticker_state
-
-                    ticker_state.update(
-                        ticker,
-                        {"state": "DISQUALIFIED", "disqualify_reason": "not_on_t212"},
-                    )
-                except Exception:
-                    _log.exception("not_on_t212 ticker_state update failed for %s", ticker)
-                recent_entry["grader_state"] = "DISQUALIFIED"
-                recent_entry["active_label"] = "FILTERED"
-                recent_entry["disqualify_reason"] = "not_on_t212"
-                return
+                # Not on T212 — still grade and notify Discord; T212 execution will be
+                # skipped inside _try_open_trade (the Discord bot can trade any ticker).
+                _log.debug("ticker %s not on T212 — grading for Discord signal only", ticker)
 
             bl = db.t212_blacklist_get(ticker)
             if bl:
@@ -1198,20 +1188,12 @@ class Engine:
                     tag = str(bl["reason"]) if bl else ""
                 except Exception:
                     pass
-                reason = f"blacklist:{tag}" if tag else "blacklist"
-                try:
-                    from .grader import state as ticker_state
-
-                    ticker_state.update(
-                        ticker,
-                        {"state": "DISQUALIFIED", "disqualify_reason": reason},
-                    )
-                except Exception:
-                    _log.exception("blacklist ticker_state update failed for %s", ticker)
-                recent_entry["grader_state"] = "DISQUALIFIED"
-                recent_entry["active_label"] = "FILTERED"
-                recent_entry["disqualify_reason"] = reason
-                return
+                # Blacklisted on T212 — still grade and notify Discord; _try_open_trade
+                # will skip execution but the Discord signal fires normally.
+                _log.debug(
+                    "ticker %s on T212 blacklist (%s) — grading for Discord signal only",
+                    ticker, tag,
+                )
 
         news_class: str | None = None
         if alert.get("news_headline"):
