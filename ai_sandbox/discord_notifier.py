@@ -125,20 +125,25 @@ async def post_trade_signal(
     content = build_trade_message(ticker, alert, decision)
 
     try:
-        import aiohttp
+        import json as _json
+        import urllib.request
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{_RELAY_URL}/publish",
-                json={"channel_id": channel_id, "content": content},
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                if resp.status not in (200, 202):
-                    body = await resp.text()
-                    _log.warning(
-                        "discord_notifier: relay returned %s — %s", resp.status, body[:200]
-                    )
-                else:
-                    _log.info("discord_notifier: signal posted for %s", ticker)
+        payload = _json.dumps({"channel_id": channel_id, "content": content}).encode()
+        req = urllib.request.Request(
+            f"{_RELAY_URL}/publish",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        # Run the blocking urllib call in a thread so the event loop isn't blocked
+        loop = asyncio.get_event_loop()
+        def _post() -> int:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status
+        status = await loop.run_in_executor(None, _post)
+        if status not in (200, 202):
+            _log.warning("discord_notifier: relay returned %s for %s", status, ticker)
+        else:
+            _log.info("discord_notifier: signal posted for %s", ticker)
     except Exception:
         _log.exception("discord_notifier: failed to post signal for %s", ticker)
