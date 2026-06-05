@@ -106,7 +106,9 @@ def build_trade_message(
     if risk_flags:
         lines.append(f"⚠️ {', '.join(str(f) for f in risk_flags[:4])}")
 
-    return "\n".join(lines) + "\n"
+    # Discord collapses bare trailing newlines — a Zero Width Space on its own
+    # line renders as a visible blank gap between consecutive messages.
+    return "\n".join(lines) + "\n\u200B"
 
 
 async def post_trade_signal(
