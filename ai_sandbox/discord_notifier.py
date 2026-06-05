@@ -61,17 +61,30 @@ def build_trade_message(
     if len(reasoning) > 280:
         reasoning = reasoning[:277] + "…"
 
-    # --- Suggested entry (5% above alert price, shown as reference) ---
+    # --- Entry prices ---
     alert_price = float(alert.get("price") or 0)
-    suggested = round(alert_price * 1.05, 4) if alert_price > 0 else None
+    entry_5pct = round(alert_price * 1.05, 4) if alert_price > 0 else None
 
     # --- Risk flags ---
     risk_flags: list[str] = decision.get("risk_flags") or []
 
     lines: list[str] = []
 
-    # Header
-    lines.append(f"🟢 **TRADE — {raw_ticker} — Entry {_fmt_price(eff_entry)}**")
+    # Header — ticker only, prices on next line
+    lines.append(f"🟢 **TRADE — {raw_ticker}**")
+
+    # Price line: Alert Price / Entry Price (+5%) / Actual Fill
+    price_parts: list[str] = []
+    if alert_price > 0:
+        price_parts.append(f"Alert Price {_fmt_price(alert_price)}")
+    if entry_5pct and entry_5pct > 0:
+        price_parts.append(f"Entry Price {_fmt_price(entry_5pct)}")
+    if eff_entry > 0 and entry_5pct and abs(eff_entry - entry_5pct) > 0.001:
+        price_parts.append(f"Fill {_fmt_price(eff_entry)}")
+    elif eff_entry > 0 and not entry_5pct:
+        price_parts.append(f"Entry {_fmt_price(eff_entry)}")
+    if price_parts:
+        lines.append("💰 " + "  ·  ".join(price_parts))
 
     # Alert snapshot
     snap_parts: list[str] = []
@@ -100,8 +113,6 @@ def build_trade_message(
     if stop > 0:
         stop_pct = round((1 - stop / eff_entry) * 100, 1) if eff_entry > 0 else None
         target_parts.append(f"🛑 Stop {_fmt_price(stop)}" + (f" (-{stop_pct}%)" if stop_pct else ""))
-    if suggested and suggested != eff_entry:
-        target_parts.append(f"Signal ref {_fmt_price(suggested)}")
     if capital_gbp > 0:
         target_parts.append(f"£{capital_gbp:,.0f} deployed")
     if target_parts:
