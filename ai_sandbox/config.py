@@ -543,6 +543,19 @@ POSITION_RECONCILE_FAST_S = 5
 POSITION_RECONCILE_SLOW_S = 30
 # Ignore transient "broker flat" right after a fill (positions API lag).
 OPEN_RECONCILE_GRACE_SECONDS = 90
+# After a close/sell-pending on a ticker, ignore stale broker-long snapshots when adopting orphans.
+def reconcile_orphan_suppress_seconds() -> float:
+    raw = (_env("AI_RECONCILE_ORPHAN_SUPPRESS_SECONDS", "180")).strip()
+    try:
+        v = float(raw)
+        if v >= 0:
+            return v
+    except ValueError:
+        pass
+    return 180.0
+
+
+RECONCILE_ORPHAN_SUPPRESS_SECONDS = reconcile_orphan_suppress_seconds()
 # Do not stop-loss broker-adopted orphans immediately (they may already be underwater).
 RECONCILE_STOP_GRACE_SECONDS = 1800
 EXIT_FLAT_POLL_TIMEOUT_S = 45.0

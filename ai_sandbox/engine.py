@@ -453,6 +453,79 @@ class Engine:
             qty_live,
         )
 
+    def _orphan_adopt_suppressed(self, tkr: str, qty: float) -> str | None:
+        """Skip orphan adopt when positions API likely still shows a just-closed line."""
+        window = float(config.RECONCILE_ORPHAN_SUPPRESS_SECONDS)
+        if window <= 0:
+            return None
+        cutoff = time.time() - window
+        row = db.fetchone(
+            """SELECT id, status, quantity, exit_ts, open_ts, exit_reason
+               FROM trades WHERE ticker=? AND (
+                 (status='CLOSED' AND exit_ts IS NOT NULL AND exit_ts >= ?)
+                 OR (status='SELL_PENDING' AND COALESCE(exit_ts, open_ts) >= ?)
+               )
+               ORDER BY COALESCE(exit_ts, open_ts) DESC LIMIT 1""",
+            (tkr, cutoff, cutoff),
+        )
+        if not row:
+            return None
+        row_d = dict(row)
+        db_qty = float(row_d.get("quantity") or 0.0)
+        if db_qty > 1e-6:
+            tol = max(1e-4, db_qty * 0.05)
+            if abs(db_qty - qty) > tol:
+                return None
+        age = time.time() - float(row_d.get("exit_ts") or row_d.get("open_ts") or 0.0)
+        return (
+            f"{row_d.get('status')} trade_id={row_d.get('id')} "
+            f"qty={db_qty:.4f} {age:.0f}s ago (suppress {window:.0f}s)"
+        )
+
+    def _finalize_stale_orphan_trade(self, trade_id: int, tkr: str, qty: float) -> bool:
+        """Close a reconciled orphan SQL row when broker is flat and a real exit already exists."""
+        row = db.fetchone(
+            "SELECT id, exit_reason, quantity FROM trades WHERE id=? AND status='OPEN'",
+            (int(trade_id),),
+        )
+        if not row:
+            return False
+        row_d = dict(row)
+        if "reconciled" not in str(row_d.get("exit_reason") or "").lower():
+            return False
+        if not self._orphan_adopt_suppressed(tkr, qty):
+            return False
+        prior = db.fetchone(
+            """SELECT id, exit_price, exit_ts, t212_close_order_id
+               FROM trades WHERE ticker=? AND status='CLOSED' AND id != ?
+               ORDER BY exit_ts DESC LIMIT 1""",
+            (tkr, int(trade_id)),
+        )
+        ts_done = time.time()
+        reason = (
+            f"duplicate_orphan_after_close:trade_{int(prior['id'])}"
+            if prior
+            else "duplicate_orphan_stale_snapshot"
+        )
+        exit_px = float(prior["exit_price"]) if prior and prior["exit_price"] else None
+        close_oid = str(prior["t212_close_order_id"] or "") if prior else ""
+        exit_ts_prior = float(prior["exit_ts"]) if prior and prior["exit_ts"] else ts_done
+        db.execute(
+            """UPDATE trades SET status='CLOSED', exit_ts=?, exit_reason=?,
+                                  exit_price=COALESCE(?, exit_price),
+                                  t212_close_order_id=COALESCE(NULLIF(?, ''), t212_close_order_id),
+                                  pnl_pct=0, pnl_gbp=0
+               WHERE id=? AND status='OPEN'""",
+            (exit_ts_prior, reason, exit_px, close_oid, int(trade_id)),
+        )
+        _log.warning(
+            "AI RECONCILE closed stale orphan trade_id=%s ticker=%s (%s)",
+            trade_id,
+            tkr,
+            reason,
+        )
+        return True
+
     async def _capture_orphan_broker_position(
         self,
         *,
@@ -466,12 +539,29 @@ class Engine:
         if not tkr or qty <= 1e-6:
             return False
 
+        suppress = self._orphan_adopt_suppressed(tkr, qty)
+        if suppress:
+            _log.info(
+                "AI RECONCILE skip orphan adopt %s qty=%.4f — stale snapshot after recent exit (%s)",
+                tkr,
+                qty,
+                suppress,
+            )
+            return False
+
         existing = db.fetchone(
             "SELECT * FROM trades WHERE status IN ('OPEN','SELL_PENDING') AND ticker=? ORDER BY open_ts DESC LIMIT 1",
             (tkr,),
         )
         if existing:
             row_d = dict(existing)
+            if str(row_d.get("status") or "").upper() == "SELL_PENDING":
+                _log.debug(
+                    "AI RECONCILE skip re-activate %s — trade_id=%s SELL_PENDING (await broker flat)",
+                    tkr,
+                    row_d.get("id"),
+                )
+                return True
             try:
                 slot_ix = int(row_d["slot"])
             except (TypeError, ValueError, KeyError):
@@ -853,6 +943,18 @@ class Engine:
                                     tkr_sl,
                                     config.OPEN_RECONCILE_GRACE_SECONDS,
                                 )
+                                continue
+                            row_full = db.fetchone(
+                                "SELECT quantity FROM trades WHERE id=? AND status='OPEN'",
+                                (int(sl.trade_id),),
+                            )
+                            db_qty = float(dict(row_full)["quantity"] or 0) if row_full else 0.0
+                            if self._finalize_stale_orphan_trade(
+                                int(sl.trade_id), tkr_sl, db_qty
+                            ):
+                                await self._stop_monitor_for_slot_ix(int(sl.index))
+                                await self.mgr.release_after_sell(sl)
+                                had_fast = True
                                 continue
                             _log.warning(
                                 "AI RECONCILE broker flat slot=%s t212=%s — releasing slot (await broker confirm)",
