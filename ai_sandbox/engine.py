@@ -16,6 +16,7 @@ from . import (
     alert_parser,
     config,
     db,
+    discord_notifier,
     entry_fill,
     news_scanner_feed,
     news_scanner_parser,
@@ -225,7 +226,7 @@ class Engine:
             await _scanner_tail()
 
     async def _grader_backfill_loop(self) -> None:
-        """Grade tickers that missed GPT due to old rules, state drift, or NBREAK pauses.
+        """Grade tickers that missed GPT due to old rules, state drift, or REV V/BTT V pauses.
         Also periodically sweeps stale PENDING_AI states (ticker stuck because AI call
         failed and no new alert arrived to trigger the inline recovery).
         """
@@ -1796,6 +1797,19 @@ class Engine:
             _log.info(
                 "OPEN slot=%d raw=%s t212=%s entry_eff=%.4f tp=%.4f stop=%.4f qty_filled=%s",
                 slot.index, ticker, t212_code, eff_entry, tp, stop, filled_prec,
+            )
+
+            asyncio.create_task(
+                discord_notifier.post_trade(
+                    ticker=ticker,
+                    eff_entry=eff_entry,
+                    tp=tp,
+                    stop=stop,
+                    alert=alert,
+                    decision=decision,
+                    capital_gbp=deployed_capital_gbp,
+                ),
+                name=f"discord-notify-{t212_code}",
             )
 
             setup = {
