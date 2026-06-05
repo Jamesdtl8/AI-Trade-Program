@@ -1253,6 +1253,10 @@ class Engine:
 
         dec = decision.get("decision")
         if dec == "TRADE":
+            asyncio.create_task(
+                discord_notifier.post_trade_signal(ticker or "", alert, decision),
+                name=f"discord-signal-{ticker}",
+            )
             await self._try_open_trade(
                 ticker,
                 alert,
@@ -1797,19 +1801,6 @@ class Engine:
             _log.info(
                 "OPEN slot=%d raw=%s t212=%s entry_eff=%.4f tp=%.4f stop=%.4f qty_filled=%s",
                 slot.index, ticker, t212_code, eff_entry, tp, stop, filled_prec,
-            )
-
-            asyncio.create_task(
-                discord_notifier.post_trade(
-                    ticker=ticker,
-                    eff_entry=eff_entry,
-                    tp=tp,
-                    stop=stop,
-                    alert=alert,
-                    decision=decision,
-                    capital_gbp=deployed_capital_gbp,
-                ),
-                name=f"discord-notify-{t212_code}",
             )
 
             setup = {
