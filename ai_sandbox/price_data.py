@@ -123,17 +123,58 @@ def _parse_bar_ts(iso: str) -> float | None:
         return None
 
 
+_history_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_HISTORY_TTL = 25.0
+
+
+def _direct_history(symbol: str) -> list[dict[str, Any]]:
+    """Fetch today's 1m bars directly from yfinance (fallback when shared cache empty)."""
+    sym = yahoo_symbol(symbol) or symbol
+    with _local_lock:
+        cached = _history_cache.get(sym)
+        if cached and (time.time() - cached[0]) < _HISTORY_TTL:
+            return list(cached[1])
+    try:
+        import yfinance as yf
+
+        df = yf.Ticker(sym).history(period="1d", interval="1m", prepost=True)
+        out: list[dict[str, Any]] = []
+        for ts, row in df.iterrows():
+            bar = {
+                "t": ts.isoformat(),
+                "o": float(row["Open"]),
+                "h": float(row["High"]),
+                "l": float(row["Low"]),
+                "c": float(row["Close"]),
+                "v": int(row["Volume"]) if row["Volume"] == row["Volume"] else 0,
+            }
+            parsed = _parse_bar_ts(bar["t"])
+            if parsed is not None:
+                bar["ts"] = parsed
+            out.append(bar)
+    except Exception as exc:
+        _log.warning("direct history %s failed: %s", sym, exc)
+        out = []
+    with _local_lock:
+        _history_cache[sym] = (time.time(), out)
+    return out
+
+
 def candles_1m(symbol: str, count: int = 20) -> list[dict[str, Any]]:
-    """Return last ``count`` × 1m candles as compact dicts (uses shared cache)."""
-    bars = _shared_history(yahoo_symbol(symbol) or symbol, "1MIN") or []
+    """Return last ``count`` × 1m candles (shared cache, then direct yfinance)."""
+    sym = yahoo_symbol(symbol) or symbol
+    bars = _shared_history(sym, "1MIN") or []
+    if not bars:
+        bars = _direct_history(sym)
     if not bars:
         return []
     out = []
     for b in bars[-count:]:
         row = dict(b)
-        ts = _parse_bar_ts(str(row.get("t") or ""))
-        if ts is not None:
-            row["ts"] = ts
+        if "ts" not in row:
+            ts = _parse_bar_ts(str(row.get("t") or ""))
+            if ts is not None:
+                row["ts"] = ts
         out.append(row)
     return out
 

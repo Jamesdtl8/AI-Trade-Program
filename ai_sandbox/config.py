@@ -450,8 +450,13 @@ def candle_model_enabled() -> bool:
     return _env("AI_CANDLE_MODEL", "1").strip().lower() in ("1", "true", "yes")
 
 
+def candle_entry_from_alert() -> bool:
+    """Enter at scanner alert (market buy); yfinance 1m candles used for exits only."""
+    return _env("AI_CANDLE_ALERT_ENTRY", "1").strip().lower() in ("1", "true", "yes")
+
+
 def candle_entry_gap_pct() -> float:
-    """Entry trigger = alert price × (1 + gap/100). Default 3%."""
+    """Legacy backtest entry trigger = alert × (1 + gap/100). Live uses alert entry when enabled."""
     raw = (_env("AI_CANDLE_ENTRY_GAP_PCT", "3")).strip()
     try:
         v = float(raw)

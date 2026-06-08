@@ -53,15 +53,58 @@ async def run_setup(
     last_candle_ts = float(row.get("last_candle_ts") or row.get("alert_ts") or 0)
     trade_id = row.get("trade_id")
     slot_ix: int | None = None
+    alert_price = float(row.get("alert_price") or trade.levels.alert_price or 0)
 
-    _log.info(
-        "candle setup #%s %s waiting trigger=%.4f (A=%.4f +%.1f%%)",
-        setup_id,
-        ticker,
-        trade.levels.entry_trigger,
-        trade.levels.alert_price,
-        gap,
-    )
+    if (
+        trade.state == cm.STATE_WAITING
+        and not trade_id
+        and config.candle_entry_from_alert()
+        and alert_price > 0
+    ):
+        seed_levels = cm.levels_after_entry(alert_price, alert_price, gap_pct=gap)
+        opened = await _open_position(
+            ticker=ticker,
+            entry_close=alert_price,
+            levels=seed_levels,
+            alert_id=int(row["alert_id"]) if row.get("alert_id") else None,
+            mgr=mgr,
+            trade_lock=trade_lock,
+        )
+        if opened is None:
+            _persist_setup(
+                setup_id,
+                trade,
+                extra={"state": cm.STATE_NOT_FILLED, "outcome": "entry_failed"},
+            )
+            return
+        trade_id, slot_ix, eff_entry = opened
+        trade = cm.CandleTradeState(
+            state=cm.STATE_UNPROTECTED,
+            levels=cm.levels_after_entry(eff_entry, alert_price, gap_pct=gap),
+        )
+        db.candle_setup_update(
+            setup_id,
+            trade_id=trade_id,
+            entry_price=eff_entry,
+            entry_ts=time.time(),
+        )
+        _persist_setup(setup_id, trade)
+        _log.info(
+            "candle setup #%s %s ENTERED at alert A=%.4f fill E=%.4f (exits on 1m close)",
+            setup_id,
+            ticker,
+            alert_price,
+            eff_entry,
+        )
+    elif trade.state == cm.STATE_WAITING and not trade_id:
+        _log.info(
+            "candle setup #%s %s waiting 1m close >= %.4f (A=%.4f +%.1f%%)",
+            setup_id,
+            ticker,
+            trade.levels.entry_trigger,
+            trade.levels.alert_price,
+            gap,
+        )
 
     while trade.state not in (cm.STATE_CLOSED, cm.STATE_NOT_FILLED):
         try:
@@ -160,6 +203,14 @@ async def run_setup(
                     _persist_setup(setup_id, trade)
                     if trade_id:
                         _update_trade_levels(int(trade_id), trade.levels)
+                    slot = _slot_by_trade(mgr, int(trade_id)) if trade_id else None
+                    if slot:
+                        label = (
+                            "RUNNER (+25% armed, 15% trail)"
+                            if trade.state == cm.STATE_RUNNER
+                            else "PROTECTED (+10% armed, +7.5% floor)"
+                        )
+                        slot.last_decision = label
 
         except asyncio.CancelledError:
             return

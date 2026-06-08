@@ -1,7 +1,7 @@
-"""1-minute candle-close trading state machine (scanner alert model).
+"""Candle-close exit state machine (scanner alert model).
 
-All entries and exits use 1m candle *closes* only — not highs, not alert price.
-See project docs for the full operating manual.
+Live: enter at scanner alert price (market buy). Exits use yfinance 1m candle
+*closes* only — not intraminute highs. Backtest mode can wait for A×1.03 close.
 """
 
 from __future__ import annotations

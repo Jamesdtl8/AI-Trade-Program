@@ -7,6 +7,17 @@ _LABELS: dict[str, str] = {
     "stop_loss_10pct": "Hit Stop Loss 10%",
     "tp_market": "Take Profit (market sell)",
     "trail_breach": "Trailing Stop Hit",
+    # Candle model exits (1m close rules)
+    "staged_stop_before_trigger": "Stop — closed below E×0.90 before +10% (1m candle)",
+    "staged_protected_close": "Protected exit — closed below E×1.075 floor (1m candle)",
+    "staged_runner_trail_close": "Runner trail — closed 15% below peak runner close (1m candle)",
+    "staged_untriggered_end_day": "End of day — flat before +10% protection (1m close)",
+    "staged_protected_end_day": "End of day — flat while protected (1m close)",
+    "staged_runner_end_day": "End of day — flat while in runner mode (1m close)",
+    "not_filled": "Not filled — entry never confirmed",
+    "entry_failed": "Entry failed — broker or slot",
+    "candle_exit": "Candle rule exit",
+    "candle_eod": "Candle end-of-day exit",
     "hard_stop_10pct": "Hit Hard Stop 10%",
     "market_sell": "Market Sell",
     "slots_full": "Unable due to Slots Full",
@@ -80,6 +91,14 @@ def humanize(code: str | None, *, fallback: str | None = None) -> str:
         return f"Filtered — T212 blacklist ({key.split(':', 1)[1]})"
     if key.startswith("paused:"):
         return f"Paused — {humanize(key.split(':', 1)[1], fallback=key.split(':', 1)[1])}"
+    if key.startswith("staged_runner_trail"):
+        return "Runner trail exit (15% below highest runner 1m close)"
+    if key.startswith("staged_protected"):
+        return "Protected floor exit (E×1.075, 1m candle close)"
+    if key.startswith("staged_stop_before"):
+        return "Initial stop exit (E×0.90, 1m candle close)"
+    if key.startswith("staged_") and key.endswith("_end_day"):
+        return "End of day flat (1m candle close, no overnight)"
     if key.startswith("trail_breach_"):
         # e.g. trail_breach_5pct_peak12.3pct → "Trailing Stop (5% trail, peak +12.3%)"
         parts = key.split("_")

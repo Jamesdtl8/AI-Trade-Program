@@ -1370,18 +1370,30 @@ class Engine:
             alert_ts=float(recent_entry.get("ts") or time.time()),
             levels_json=_json.dumps(trade.levels.to_dict()),
         )
-        recent_entry["active_label"] = "WAITING ENTRY"
         recent_entry["candle_setup_id"] = setup_id
-        recent_entry["entry_trigger"] = trade.levels.entry_trigger
-        recent_entry["decision"] = "CANDLE_WAIT"
-        _log.info(
-            "candle setup #%s %s A=%.4f trigger=%.4f (+%.1f%%)",
-            setup_id,
-            tk,
-            alert_price,
-            trade.levels.entry_trigger,
-            config.candle_entry_gap_pct(),
-        )
+        recent_entry["decision"] = "TRADE"
+        if config.candle_entry_from_alert():
+            recent_entry["active_label"] = "TRADE"
+            recent_entry["grader_state"] = "TRADE"
+            _log.info(
+                "candle setup #%s %s alert entry A=%.4f stake=£%.0f (exits on 1m close)",
+                setup_id,
+                tk,
+                alert_price,
+                config.candle_stake_gbp(),
+            )
+        else:
+            recent_entry["active_label"] = "WAITING ENTRY"
+            recent_entry["entry_trigger"] = trade.levels.entry_trigger
+            recent_entry["decision"] = "CANDLE_WAIT"
+            _log.info(
+                "candle setup #%s %s A=%.4f trigger=%.4f (+%.1f%%)",
+                setup_id,
+                tk,
+                alert_price,
+                trade.levels.entry_trigger,
+                config.candle_entry_gap_pct(),
+            )
         self._spawn_candle_task(setup_id)
 
     async def _handle_message(self, msg: dict[str, Any]) -> None:

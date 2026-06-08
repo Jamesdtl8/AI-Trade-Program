@@ -4355,8 +4355,18 @@ function _aiTagChip(t) {
 function _aiHumanReason(code) {
   if (!code) return '—';
   const map = {
-    stop_loss_10pct: 'Hit Stop Loss 15%',
+    stop_loss_10pct: 'Hit Stop Loss 10%',
     trail_breach: 'Trailing Stop Hit',
+    staged_stop_before_trigger: 'Stop — below E×0.90 before +10% (1m close)',
+    staged_protected_close: 'Protected — below +7.5% floor (1m close)',
+    staged_runner_trail_close: 'Runner trail — 15% below peak close (1m close)',
+    staged_untriggered_end_day: 'EOD flat — before protection (1m close)',
+    staged_protected_end_day: 'EOD flat — while protected (1m close)',
+    staged_runner_end_day: 'EOD flat — runner (1m close)',
+    not_filled: 'Not filled',
+    entry_failed: 'Entry failed',
+    candle_exit: 'Candle rule exit',
+    candle_eod: 'End of day exit',
     tp_market: 'Take Profit (market sell)',
     slots_full: 'Unable due to Slots Full',
     float_too_large: 'Disqualified — float over 50M',
