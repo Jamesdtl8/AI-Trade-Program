@@ -12,6 +12,7 @@ from typing import Any
 
 _AITP_ROOT = Path(__file__).resolve().parent
 _REPO_ROOT = _AITP_ROOT.parent
+_TRADING_PLATFORM_ROOT = _REPO_ROOT / "Trading Platform"
 for p in (_AITP_ROOT, _REPO_ROOT):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
@@ -23,10 +24,15 @@ def _load_dotenv() -> None:
     except ImportError:
         return
     load_dotenv(_REPO_ROOT / ".env", override=False)
+    load_dotenv(_TRADING_PLATFORM_ROOT / ".env", override=False)
     load_dotenv(_AITP_ROOT / ".env", override=False)
 
 
 _load_dotenv()
+
+import website_auth as _website_auth  # noqa: E402
+
+_website_auth.validate_website_auth_config()
 
 from flask import (  # noqa: E402
     Flask,
@@ -45,6 +51,8 @@ app = Flask(
     template_folder=str(_AITP_ROOT / "templates"),
     static_folder=str(_AITP_ROOT / "static"),
 )
+_website_auth.configure_app(app)
+_website_auth.register_auth_routes(app)
 
 
 @app.get("/")
