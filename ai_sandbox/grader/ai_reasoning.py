@@ -68,6 +68,63 @@ _TECHNICAL_MARKERS = (
 _SUMMARY_MAX_SENTENCES = 2
 _SUMMARY_MAX_CHARS = 240
 
+# Phrases that belong to a different final outcome than the one postprocess chose.
+_CONTRADICTION_MARKERS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("STRONG", "TRADE"): (
+        "blow-off",
+        "too extended",
+        "passing on",
+        "not entering",
+        "not safe",
+        "exhausted",
+        "too late",
+        "skip this",
+        "avoid entry",
+    ),
+    ("WATCH", "MONITOR"): (
+        "taking the trade",
+        "entering now",
+        "take the trade",
+    ),
+    ("SKIP", "PASS"): (
+        "taking the trade",
+        "entering now",
+        "take the trade",
+    ),
+}
+
+
+def _grade_override_reason(ctx: dict[str, Any], final_grade: str) -> str | None:
+    """Reason for the last postprocess grade change that landed on ``final_grade``."""
+    history = ctx.get("grade_change_history")
+    if not isinstance(history, list):
+        return None
+    target = str(final_grade or "").upper()
+    for change in reversed(history):
+        if not isinstance(change, dict):
+            continue
+        to_grade = str(change.get("to") or "").upper()
+        from_grade = str(change.get("from") or "").upper()
+        reason = str(change.get("reason") or "").strip()
+        if not reason or reason == "grade_action_normalized":
+            continue
+        if to_grade == target and from_grade and from_grade != to_grade:
+            return reason
+    return None
+
+
+def _body_contradicts_outcome(body: str, grade: str, action: str) -> bool:
+    g, a, _ = normalize_grade_action(grade, action)
+    lower = str(body or "").lower()
+    return any(marker in lower for marker in _CONTRADICTION_MARKERS.get((g, a), ()))
+
+
+def _override_summary_body(ctx: dict[str, Any], reason: str) -> str:
+    msg = _OVERRIDE_REASONS.get(reason)
+    if msg:
+        return msg
+    return f"System adjusted the grade: {humanize(reason)}."
+
 
 def clamp_summary_text(text: str, *, max_sentences: int = _SUMMARY_MAX_SENTENCES, max_chars: int = _SUMMARY_MAX_CHARS) -> str:
     """Keep dashboard summaries short — about two lines."""
@@ -109,6 +166,15 @@ def align_summary_to_outcome(output: dict[str, Any], grade: str, action: str) ->
             lower = summary.lower()
             break
     body = summary.strip()
+    ctx = output.get("context") if isinstance(output.get("context"), dict) else {}
+    g, a, _ = normalize_grade_action(grade, action)
+    override_reason = _grade_override_reason(ctx, g)
+    if override_reason:
+        # Model summary was written for the pre-override grade — replace stale prose.
+        body = _override_summary_body(ctx, override_reason)
+    elif _body_contradicts_outcome(body, g, a):
+        body = ""
+
     output["summary"] = clamp_summary_text(f"{headline} {body}".strip() if body else headline)
 
 
@@ -256,8 +322,17 @@ def finalize_reasoning(output: dict[str, Any] | None) -> str:
         output.get("summary") or output.get("reasoning") or output.get("reason") or ""
     ).strip()
 
+    override_reason = _grade_override_reason(ctx, grade)
     if gpt_summary and not _looks_technical(gpt_summary):
-        text = gpt_summary
+        if override_reason or _body_contradicts_outcome(gpt_summary, grade, action):
+            headline = _OUTCOME_OPENERS.get((grade, action), "")
+            if override_reason:
+                body = _override_summary_body(ctx, override_reason)
+            else:
+                body = ""
+            text = clamp_summary_text(f"{headline} {body}".strip() if body else headline)
+        else:
+            text = gpt_summary
     else:
         text = build_narrative_summary(output)
 

@@ -217,6 +217,7 @@ async def process_scanner_alert(
     alert_id: int,
     recent_entry: dict[str, Any],
     skip_append: bool = False,
+    grade_alerts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Run New System grader path. Mutates recent_entry; returns decision dict if scored."""
     tk = ticker.upper()
@@ -256,6 +257,18 @@ async def process_scanner_alert(
             recent_entry["grader_state"] = st
             recent_entry["active_label"] = ticker_state.ui_label(st_row)
             recent_entry["defer_reason"] = "sell_in_flight"
+            return None
+        any_trade = db.fetchone(
+            f"""SELECT id FROM trades
+                WHERE {match_sql}
+                  AND status IN ('OPEN', 'SELL_PENDING', 'CLOSED')
+                LIMIT 1""",
+            match_params,
+        )
+        if not any_trade:
+            recent_entry["grader_state"] = st
+            recent_entry["active_label"] = ticker_state.ui_label(st_row)
+            recent_entry["defer_reason"] = "graded_not_executed"
             return None
         ticker_state.mark_traded(tk)
         ticker_state.reset_traded_for_new_alert(tk)
@@ -307,7 +320,7 @@ async def process_scanner_alert(
         return None
 
     if skip_append:
-        alerts = list(st_row.get("alerts") or [])
+        alerts = list(grade_alerts or st_row.get("alerts") or [])
     else:
         alerts = list(st_row.get("alerts") or [])
         alerts.append(alert_snapshot(alert))
@@ -326,12 +339,14 @@ async def process_scanner_alert(
     recent_entry["grader_state"] = st_row.get("state")
     recent_entry["active_label"] = ticker_state.ui_label(st_row)
 
+    grade_state = {**st_row, "alerts": alerts} if grade_alerts is not None else st_row
+
     if alert.get("source") == "news_tester":
         ready, why = True, "news_tester_force"
     else:
-        ready, why = hard_rules.should_send_to_ai(st_row, alert)
+        ready, why = hard_rules.should_send_to_ai(grade_state, alert)
     if not ready:
         recent_entry["defer_reason"] = why
         return None
 
-    return await _run_openai_grade(tk, st_row, alerts, alert_id, recent_entry, why)
+    return await _run_openai_grade(tk, grade_state, alerts, alert_id, recent_entry, why)

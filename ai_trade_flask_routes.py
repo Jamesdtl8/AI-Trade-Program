@@ -124,21 +124,27 @@ def api_ai_status():
     cfg = _ai_config()
     db = _ai_db()
     day0 = cfg.uk_day_start_ts()
-    today_pnl_row = db.fetchone(
-        """SELECT COALESCE(SUM(pnl_gbp),0) AS s FROM trades
-           WHERE status='CLOSED' AND exit_ts >= ? AND pnl_gbp IS NOT NULL""",
-        (day0,),
-    )
-    today_pnl_realized = float(today_pnl_row["s"]) if today_pnl_row else 0.0
     px_map = _ai_live_price_usd_by_ticker()
-    today_pnl_open_unreal = _ai_open_trades_unrealized_gbp(px_map)
+    if cfg.full_pot_display_enabled():
+        today_pnl_realized = _ai_scaled_closed_pnl_sum(db, since_ts=day0)
+        today_pnl_open_unreal = _ai_scaled_open_unrealized_gbp(px_map)
+        lifetime_pnl_realized = _ai_scaled_closed_pnl_sum(db)
+        lifetime_pnl_open_unreal = today_pnl_open_unreal
+    else:
+        today_pnl_row = db.fetchone(
+            """SELECT COALESCE(SUM(pnl_gbp),0) AS s FROM trades
+               WHERE status='CLOSED' AND exit_ts >= ? AND pnl_gbp IS NOT NULL""",
+            (day0,),
+        )
+        today_pnl_realized = float(today_pnl_row["s"]) if today_pnl_row else 0.0
+        today_pnl_open_unreal = _ai_open_trades_unrealized_gbp(px_map)
+        lifetime_pnl_row = db.fetchone(
+            """SELECT COALESCE(SUM(pnl_gbp),0) AS s FROM trades
+               WHERE status='CLOSED' AND pnl_gbp IS NOT NULL""",
+        )
+        lifetime_pnl_realized = float(lifetime_pnl_row["s"]) if lifetime_pnl_row else 0.0
+        lifetime_pnl_open_unreal = today_pnl_open_unreal
     today_pnl = round(today_pnl_realized + today_pnl_open_unreal, 2)
-    lifetime_pnl_row = db.fetchone(
-        """SELECT COALESCE(SUM(pnl_gbp),0) AS s FROM trades
-           WHERE status='CLOSED' AND pnl_gbp IS NOT NULL""",
-    )
-    lifetime_pnl_realized = float(lifetime_pnl_row["s"]) if lifetime_pnl_row else 0.0
-    lifetime_pnl_open_unreal = today_pnl_open_unreal
     lifetime_pnl = round(lifetime_pnl_realized + lifetime_pnl_open_unreal, 2)
     closed_lifetime = db.fetchone(
         """SELECT COUNT(*) AS c FROM trades
@@ -190,6 +196,7 @@ def api_ai_status():
     cap = cfg.capital_sizing_snapshot(db=db, cash=cash)
     return jsonify(
         ok=True,
+        full_pot_display=cfg.full_pot_display_enabled(),
         engine=eng.status(),
         slot_capital_gbp=cap.get("slot_capital_gbp") or cfg.SLOT_CAPITAL_GBP,
         slot_capital_static_gbp=cfg.SLOT_CAPITAL_GBP,
@@ -470,6 +477,131 @@ def _ai_trade_broker_confirmed(row: dict) -> bool:
     )
 
 
+def _ai_deployed_gbp(record: dict) -> float:
+    for key in ("wallet_total_cost_gbp", "capital_gbp"):
+        val = record.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
+def _ai_apply_full_pot_to_record(record: dict, *, slot_key: str = "slot") -> None:
+    """Scale GBP P&L and deployed amounts to full pot targets (display only)."""
+    cfg = _ai_config()
+    if not cfg.full_pot_display_enabled():
+        return
+    slot_idx = int(record.get(slot_key) or record.get("index") or 0)
+    deployed = _ai_deployed_gbp(record)
+    factor = cfg.full_pot_scale_factor(deployed, slot_idx)
+    if factor == 1.0:
+        return
+    target = cfg.full_pot_display_target_gbp()
+    for key in ("pnl_gbp", "live_pnl_gbp", "unreal_gbp"):
+        if record.get(key) is not None:
+            record[key] = cfg.scale_gbp_for_full_pot(float(record[key]), deployed, slot_idx)
+    if deployed > 0:
+        record["capital_gbp"] = target
+        if record.get("wallet_total_cost_gbp") is not None:
+            record["wallet_total_cost_gbp"] = target
+        unreal = record.get("live_pnl_gbp") or record.get("unreal_gbp")
+        if record.get("wallet_current_value_gbp") is not None and unreal is not None:
+            record["wallet_current_value_gbp"] = round(target + float(unreal), 2)
+    record["full_pot_scaled"] = True
+
+
+def _ai_scale_analytics_gbp(analytics: dict | None, *, deployed_gbp: float, slot_index: int) -> None:
+    if not analytics or not isinstance(analytics, dict):
+        return
+    cfg = _ai_config()
+    if not cfg.full_pot_display_enabled():
+        return
+    factor = cfg.full_pot_scale_factor(deployed_gbp, slot_index)
+    if factor == 1.0:
+        return
+    for key, val in list(analytics.items()):
+        if not key.endswith("_gbp") or val is None:
+            continue
+        try:
+            analytics[key] = round(float(val) * factor, 2)
+        except (TypeError, ValueError):
+            pass
+
+
+def _ai_scaled_closed_pnl_sum(db, *, since_ts: float | None = None) -> float:
+    cfg = _ai_config()
+    q = "SELECT pnl_gbp, capital_gbp, slot FROM trades WHERE status='CLOSED' AND pnl_gbp IS NOT NULL"
+    params: list = []
+    if since_ts is not None:
+        q += " AND exit_ts >= ?"
+        params.append(since_ts)
+    rows = db.fetchall(q, tuple(params))
+    total = 0.0
+    for r in rows:
+        dep = float(r["capital_gbp"] or 0.0)
+        slot = int(r["slot"] or 0)
+        pnl = float(r["pnl_gbp"])
+        if cfg.full_pot_display_enabled():
+            pnl *= cfg.full_pot_scale_factor(dep, slot)
+        total += pnl
+    return round(total, 2)
+
+
+def _ai_scaled_open_unrealized_gbp(px_map: dict[str, float]) -> float:
+    cfg = _ai_config()
+    wallet_map = _ai_positions_wallet_map()
+    if wallet_map:
+        db = _ai_db()
+        trade_rows = db.fetchall(
+            "SELECT ticker, slot, capital_gbp FROM trades WHERE status='OPEN'",
+        )
+        ticker_meta: dict[str, tuple[int, float]] = {}
+        for r in trade_rows:
+            tk = str(r["ticker"] or "").strip().upper()
+            if tk:
+                ticker_meta[tk] = (int(r["slot"] or 0), float(r["capital_gbp"] or 0.0))
+        total = 0.0
+        for tk, wm in wallet_map.items():
+            if not wm or wm.get("unreal_gbp") is None:
+                continue
+            unreal = float(wm["unreal_gbp"])
+            slot_idx, cap_db = ticker_meta.get(tk, (0, 0.0))
+            dep = wm.get("total_cost_gbp")
+            if dep is None:
+                dep = cap_db
+            if cfg.full_pot_display_enabled():
+                unreal *= cfg.full_pot_scale_factor(float(dep or 0.0), slot_idx)
+            total += unreal
+        return round(total, 2)
+
+    if not px_map:
+        return 0.0
+    db = _ai_db()
+    rows = db.fetchall(
+        "SELECT ticker, entry_price, quantity, slot, capital_gbp FROM trades WHERE status='OPEN'",
+    )
+    total = 0.0
+    for r in rows:
+        tk = str(r["ticker"] or "").strip().upper()
+        px = px_map.get(tk)
+        if px is None or px <= 0:
+            continue
+        try:
+            entry = float(r["entry_price"] or 0)
+            qty = float(r["quantity"] or 0)
+        except (TypeError, ValueError):
+            continue
+        if entry <= 0 or qty <= 0:
+            continue
+        unreal = float(cfg.usd_notionals_to_gbp(qty * (px - entry)))
+        if cfg.full_pot_display_enabled():
+            unreal *= cfg.full_pot_scale_factor(float(r["capital_gbp"] or 0.0), int(r["slot"] or 0))
+        total += unreal
+    return round(total, 2)
+
+
 def _ai_positions_wallet_map() -> dict[str, dict[str, float | None]]:
     """T212 walletImpact metrics keyed by instrument code (GBP from broker)."""
     import asyncio as _asyncio
@@ -620,9 +752,12 @@ def api_ai_slots():
                 except Exception as exc:
                     _log.debug("slot watch_hist_id failed trade_id=%s: %s", tid, exc)
         _ai_merge_broker_into_slots(snap, broker_rows)
+        for s in snap.get("slots", []):
+            _ai_apply_full_pot_to_record(s, slot_key="index")
     except Exception as exc:
         _log.debug("ai slot enrich failed: %s", exc)
     snap["broker_positions"] = broker_rows
+    snap["full_pot_display"] = _ai_config().full_pot_display_enabled()
     return jsonify(ok=True, **snap)
 
 
@@ -698,6 +833,9 @@ def api_ai_feed():
     FIRE, WHALE, and standalone OFFERING alerts are omitted. OFFERING rows appear
     only when that ticker also has a movement SCANNER alert on the selected day.
 
+    ``trade_items`` lists every ticker that received a TRADE grade on the selected
+    day (from ``scores``, one row per symbol, most recent TRADE grade).
+
     Query ``day``: ``today`` (default), ``yesterday``, ``YYYY-MM-DD``, or ``all``.
     """
     db = _ai_db()
@@ -733,16 +871,25 @@ def api_ai_feed():
     rows = db.fetchall(sql, tuple(params))
     import json as _json
 
-    latest_rows = db.fetchall(
-        """
+    latest_sql = """
         SELECT ticker, score, decision FROM (
-            SELECT ticker, score, decision,
-                   ROW_NUMBER() OVER (PARTITION BY UPPER(ticker) ORDER BY ts DESC, id DESC) AS rn
-            FROM scores
-            WHERE ticker IS NOT NULL AND TRIM(ticker) != ''
+            SELECT s.ticker, s.score, s.decision,
+                   ROW_NUMBER() OVER (PARTITION BY UPPER(s.ticker) ORDER BY s.ts DESC, s.id DESC) AS rn
+            FROM scores s
+            JOIN alerts a ON a.id = s.alert_id
+            WHERE s.ticker IS NOT NULL AND TRIM(s.ticker) != ''
+    """
+    latest_params: list = []
+    if since_ts is not None:
+        latest_sql += " AND a.ts >= ?"
+        latest_params.append(float(since_ts))
+    if until_ts is not None:
+        latest_sql += " AND a.ts < ?"
+        latest_params.append(float(until_ts))
+    latest_sql += """
         ) x WHERE rn = 1
-        """
-    )
+    """
+    latest_rows = db.fetchall(latest_sql, tuple(latest_params))
     ticker_latest = {}
     for lr in latest_rows:
         tk = (lr["ticker"] or "").strip().upper()
@@ -791,15 +938,8 @@ def api_ai_feed():
         for r in db.fetchall("SELECT ticker, reason FROM t212_blacklist")
     }
 
-    items = []
-    for r in rows:
-        d = dict(r)
-        atype = d.get("type")
-        if atype in _FEED_IGNORE_TYPES:
-            continue
+    def _feed_build_item(d: dict) -> dict:
         tk = (d.get("ticker") or "").strip().upper()
-        if atype == "OFFERING" and (not tk or tk not in tickers_with_movement):
-            continue
         parsed = {}
         if d.get("parsed_json"):
             try:
@@ -809,7 +949,7 @@ def api_ai_feed():
         alert_score = d.get("score")
         alert_decision = d.get("decision")
         eff_score, eff_decision = alert_score, alert_decision
-        if tk and tk in ticker_latest:
+        if alert_score is None and alert_decision is None and tk and tk in ticker_latest:
             eff_score, eff_decision = ticker_latest[tk]
         st_row = state_map.get(tk) if tk else None
         active_label = grader_state.ui_label(st_row) if st_row else None
@@ -837,34 +977,84 @@ def api_ai_feed():
         ):
             active_label = "WATCHING"
             grader_st = "WATCHING"
-        items.append(
+        return {
+            "alert_id": d["alert_id"],
+            "ts": d["ts"],
+            "ticker": d["ticker"],
+            "type": d["type"],
+            "raw": d["raw"],
+            "news_class": d["news_class"],
+            "score": eff_score,
+            "decision": eff_decision,
+            "alert_score": alert_score,
+            "alert_decision": alert_decision,
+            "grader_state": grader_st,
+            "active_label": active_label,
+            "disqualify_reason": disqualify,
+            "alerts_processed": ticker_alert_counts.get(tk, 0) if tk else 0,
+            "parsed": {
+                "price": parsed.get("price"),
+                "pct": parsed.get("pct"),
+                "rv": parsed.get("rv"),
+                "float": parsed.get("float"),
+                "market_cap": parsed.get("market_cap"),
+                "rank": parsed.get("rank"),
+                "tags": parsed.get("tags") or [],
+                "news_headline": parsed.get("news_headline"),
+            },
+        }
+
+    items = []
+    for r in rows:
+        d = dict(r)
+        atype = d.get("type")
+        if atype in _FEED_IGNORE_TYPES:
+            continue
+        tk = (d.get("ticker") or "").strip().upper()
+        if atype == "OFFERING" and (not tk or tk not in tickers_with_movement):
+            continue
+        items.append(_feed_build_item(d))
+
+    trade_sql = """
+        SELECT s.alert_id, s.ticker, s.score, s.decision, s.reason, s.ts AS score_ts,
+               a.ts, a.type, a.raw, a.news_class, a.parsed_json
+        FROM scores s
+        JOIN alerts a ON a.id = s.alert_id
+        WHERE UPPER(s.decision) = 'TRADE'
+    """
+    trade_params: list = []
+    if since_ts is not None:
+        trade_sql += " AND a.ts >= ?"
+        trade_params.append(float(since_ts))
+    if until_ts is not None:
+        trade_sql += " AND a.ts < ?"
+        trade_params.append(float(until_ts))
+    trade_sql += " ORDER BY s.ts DESC"
+    trade_rows = db.fetchall(trade_sql, tuple(trade_params))
+    trade_by_ticker: dict[str, dict] = {}
+    for r in trade_rows:
+        d = dict(r)
+        tk = (d.get("ticker") or "").strip().upper()
+        if not tk or tk in trade_by_ticker:
+            continue
+        trade_by_ticker[tk] = _feed_build_item(
             {
                 "alert_id": d["alert_id"],
-                "ts": d["ts"],
+                "ts": float(d.get("score_ts") or d["ts"] or 0),
                 "ticker": d["ticker"],
                 "type": d["type"],
                 "raw": d["raw"],
                 "news_class": d["news_class"],
-                "score": eff_score,
-                "decision": eff_decision,
-                "alert_score": alert_score,
-                "alert_decision": alert_decision,
-                "grader_state": grader_st,
-                "active_label": active_label,
-                "disqualify_reason": disqualify,
-                "alerts_processed": ticker_alert_counts.get(tk, 0) if tk else 0,
-                "parsed": {
-                    "price": parsed.get("price"),
-                    "pct": parsed.get("pct"),
-                    "rv": parsed.get("rv"),
-                    "float": parsed.get("float"),
-                    "market_cap": parsed.get("market_cap"),
-                    "rank": parsed.get("rank"),
-                    "tags": parsed.get("tags") or [],
-                    "news_headline": parsed.get("news_headline"),
-                },
+                "parsed_json": d.get("parsed_json"),
+                "score": d["score"],
+                "decision": d["decision"],
             }
         )
+    trade_items = sorted(
+        trade_by_ticker.values(),
+        key=lambda x: float(x.get("ts") or 0),
+        reverse=True,
+    )
 
     from collections import defaultdict
 
@@ -888,6 +1078,7 @@ def api_ai_feed():
     return jsonify(
         ok=True,
         items=deduped,
+        trade_items=trade_items,
         day=day,
         day_options=_feed_day_options(),
         since_ts=since_ts,
@@ -949,23 +1140,25 @@ def api_ai_trades():
 
     for it in items:
         it["broker_confirmed"] = _ai_trade_broker_confirmed(it)
+        _ai_apply_full_pot_to_record(it)
     items = [
         it
         for it in items
         if str(it.get("status") or "").upper() != "CLOSED" or it.get("broker_confirmed")
     ]
 
-    return jsonify(ok=True, items=items)
+    return jsonify(
+        ok=True,
+        items=items,
+        full_pot_display=_ai_config().full_pot_display_enabled(),
+    )
 
 
 @app.get("/api/ai/monitor/<int:trade_id>")
 def api_ai_monitor(trade_id: int):
     db = _ai_db()
-    rows = db.fetchall(
-        "SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log WHERE trade_id=? ORDER BY ts",
-        (trade_id,),
-    )
-    return jsonify(ok=True, items=[dict(r) for r in rows])
+    rows = db.monitor_log_for_trade(int(trade_id))
+    return jsonify(ok=True, items=rows)
 
 
 @app.get("/api/ai/trade/<int:trade_id>/ticks")
@@ -989,15 +1182,7 @@ def api_ai_trade_analytics(trade_id: int):
         else None
     )
     analytics = db.trade_analytics_for_trade(int(trade_id), exit_pct=exit_pct)
-    monitor = [
-        dict(r)
-        for r in db.fetchall(
-            "SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log "
-            "WHERE trade_id=? ORDER BY ts DESC LIMIT 80",
-            (int(trade_id),),
-        )
-    ]
-    monitor.reverse()
+    monitor = db.monitor_log_for_trade(int(trade_id))
     try:
         from ai_sandbox import t212_ai as _t212_ai_disp
 
@@ -1006,6 +1191,14 @@ def api_ai_trade_analytics(trade_id: int):
             tr["display_ticker"] = _t212_ai_disp.display_raw_for(tk)
     except Exception:
         pass
+    actual_deployed = _ai_deployed_gbp(tr)
+    slot_idx = int(tr.get("slot") or 0)
+    _ai_scale_analytics_gbp(
+        analytics,
+        deployed_gbp=actual_deployed,
+        slot_index=slot_idx,
+    )
+    _ai_apply_full_pot_to_record(tr)
     return jsonify(
         ok=True,
         trade_id=trade_id,
@@ -1013,6 +1206,7 @@ def api_ai_trade_analytics(trade_id: int):
         trade=tr,
         analytics=analytics,
         monitor=monitor,
+        full_pot_display=_ai_config().full_pot_display_enabled(),
     )
 
 
@@ -1123,13 +1317,7 @@ def api_ai_alert(alert_id: int):
         except Exception:
             pass
         trade_row = tr
-        monitor = [
-            dict(r)
-            for r in db.fetchall(
-                "SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log WHERE trade_id=? ORDER BY ts",
-                (trade_row["id"],),
-            )
-        ]
+        monitor = db.monitor_log_for_trade(int(trade_row["id"]))
         try:
             trade_analytics = db.trade_analytics_for_trade(int(trade_row["id"]))
         except Exception as exc:
@@ -1433,14 +1621,7 @@ def api_ai_watch_history_detail(hist_id: int):
             except Exception as exc:
                 _log.debug("trade_analytics detail failed id=%s: %s", tid, exc)
         try:
-            trade_monitor = [
-                dict(r)
-                for r in db.fetchall(
-                    "SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log "
-                    "WHERE trade_id=? ORDER BY ts ASC",
-                    (tid,),
-                )
-            ]
+            trade_monitor = db.monitor_log_for_trade(int(tid))
         except Exception as exc:
             _log.debug("trade_monitor detail failed id=%s: %s", tid, exc)
     return jsonify(
@@ -1508,6 +1689,16 @@ def api_ai_toggle():
     payload = request.get_json(silent=True) or {}
     enabled = bool(payload.get("enabled"))
     _ai_cfg.persist_ai_trading_enabled(enabled)
+    return jsonify(ok=True, enabled=enabled)
+
+
+@app.post("/api/ai/full-pot-display/toggle")
+def api_ai_full_pot_display_toggle():
+    from ai_sandbox import config as _ai_cfg
+
+    payload = request.get_json(silent=True) or {}
+    enabled = bool(payload.get("enabled"))
+    _ai_cfg.persist_full_pot_display_enabled(enabled)
     return jsonify(ok=True, enabled=enabled)
 
 

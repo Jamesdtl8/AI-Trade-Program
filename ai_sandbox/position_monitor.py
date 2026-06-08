@@ -90,6 +90,25 @@ async def _try_confirm_close_from_broker(trade_id: int, ticker: str) -> bool:
            WHERE id=? AND status='SELL_PENDING'""",
         (int(trade_id),),
     )
+    closed = db.fetchone(
+        """SELECT exit_ts, exit_reason, t212_close_order_id FROM trades WHERE id=?""",
+        (int(trade_id),),
+    )
+    if closed:
+        try:
+            db.monitor_log_ensure_exit_ticks(
+                int(trade_id),
+                exit_ts=float(closed["exit_ts"] or time.time()),
+            )
+            db.trade_audit_finalize(
+                int(trade_id),
+                exit_ts=float(closed["exit_ts"] or time.time()),
+                exit_reason=str(closed["exit_reason"] or "market_sell"),
+                risk_at_exit={"broker_confirmed": True, "realised_gbp": float(realised)},
+                close_order_id=str(closed["t212_close_order_id"] or "") or None,
+            )
+        except Exception:
+            _log.exception("trade audit finalize on broker confirm trade_id=%s", trade_id)
     _log.info("broker confirmed close trade=%s ticker=%s pnl_gbp=%.2f", trade_id, ticker, realised)
     return True
 
@@ -175,6 +194,10 @@ async def _send_market_sell(
         (exit_ts_wall, reason, close_oid, float(price), trade_id),
     )
     await mgr.mark_sell_pending(slot, reason=reason)
+    try:
+        db.monitor_log_ensure_exit_ticks(int(trade_id), exit_ts=exit_ts_wall)
+    except Exception:
+        _log.debug("monitor_log_ensure_exit_ticks on sell failed trade_id=%s", trade_id)
     _log.info(
         "SELL_PENDING slot=%d ticker=%s reason=%s close_oid=%s qty=%.4f",
         slot.index,
@@ -331,12 +354,14 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                 )
 
             stop_grace_until = float(setup.get("stop_grace_until") or 0.0)
+            peak_g = trail_stop.peak_gain_pct(entry, highest)
+            in_grace = stop_grace_until > 0 and time.time() < stop_grace_until
 
             # Hard stop: max stop-loss % unrealized P&L → market sell.
             if (
                 unreal_pct is not None
                 and unreal_pct <= -stop_loss_pct
-                and not (stop_grace_until > 0 and time.time() < stop_grace_until)
+                and not in_grace
             ):
                 if await _send_market_sell(
                     slot,
@@ -354,15 +379,50 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                     continue
                 return
 
-            # Trailing stop ladder (arms permanently on first +7.5% peak; tier from peak gain).
+            # Runner giveback cap — once peak gain hits the arm level, lock in peak progress
+            # instead of relying on the %-below-peak trail (better on violent reversals).
             if (
                 not _paper_mode()
+                and unreal_pct is not None
+                and trail_stop.giveback_cap_breached(float(unreal_pct), peak_g)
+                and not in_grace
+            ):
+                floor_gain = trail_stop.giveback_floor_gain_pct(
+                    peak_g, cap_pp=config.PEAK_GIVEBACK_CAP_PCT
+                )
+                giveback_reason = (
+                    f"peak_giveback_{config.PEAK_GIVEBACK_CAP_PCT:.0f}pct"
+                    f"_peak{peak_g:.1f}pct"
+                )
+                if await _send_market_sell(
+                    slot,
+                    mgr,
+                    ticker,
+                    price,
+                    giveback_reason,
+                    audit_extra={
+                        "unreal_pct": unreal_pct,
+                        "peak_gain_pct": peak_g,
+                        "giveback_cap_pp": config.PEAK_GIVEBACK_CAP_PCT,
+                        "giveback_floor_gain_pct": floor_gain,
+                        "giveback_arm_pct": config.PEAK_GIVEBACK_ARM_PCT,
+                        "highest_price": highest,
+                        "broker_entry": entry,
+                    },
+                ):
+                    continue
+                return
+
+            # Profit-lock floors (+8.5→5%, +10→6%, +15→8%) and trail ladder (arms +15% peak).
+            # Skipped once runner giveback cap is armed — peak gain already past arm threshold.
+            if (
+                not _paper_mode()
+                and peak_g < config.PEAK_GIVEBACK_ARM_PCT
                 and trail_active
                 and price > 0
                 and price <= stop_level
-                and not (stop_grace_until > 0 and time.time() < stop_grace_until)
+                and not in_grace
             ):
-                peak_g = trail_stop.peak_gain_pct(entry, highest)
                 trail_reason = (
                     f"trail_breach_{trail_pct:.0f}pct"
                     f"_peak{peak_g:.1f}pct"

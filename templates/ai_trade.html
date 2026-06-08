@@ -172,6 +172,7 @@
   }
 
   .header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: nowrap; justify-content: flex-end; justify-self: end; min-width: 0; }
+  .header-icon-priority { flex-shrink: 0; }
   .source-tag { font-family: var(--mono); font-size: 10px; color: var(--text3); display: none; }
   .market-status {
     display: flex;
@@ -1528,10 +1529,14 @@
       min-width: 0;
       max-width: 100%;
       justify-content: flex-end;
-      overflow: hidden;
+      overflow-x: auto;
+      overflow-y: visible;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
       align-self: start;
       padding-top: 2px;
     }
+    .header-right::-webkit-scrollbar { display: none; }
     .header-center {
       grid-column: 1 / -1;
       grid-row: 2;
@@ -2097,6 +2102,11 @@
     <button type="button" class="nav-tab" data-nav="reasoning-test" aria-label="Reasoning Test"><span class="nav-tab-full">Reasoning Test</span><span class="nav-tab-mini" aria-hidden="true">Lab</span></button>
   </div>
   <div class="header-right">
+    <button type="button" class="icon-link header-icon-priority" id="headerBotSettingsBtn" title="AI Trade display settings" aria-label="AI Trade settings" aria-expanded="false" aria-controls="ai-settings-popover"><i class="ti ti-settings"></i><span class="ai-settings-active-dot" id="ai-settings-active-dot" hidden aria-hidden="true"></span></button>
+    <button type="button" class="icon-link header-icon-priority" id="debugBtn" title="Open console" style="position:relative;">
+      <i class="ti ti-terminal-2"></i>
+      <span id="debugBtnBadge" style="display:none;position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s ease-in-out infinite;"></span>
+    </button>
     <div class="market-status closed" id="marketStatusEl">
       <div class="status-dot"></div>
       <span id="marketLabel">Market</span>
@@ -2107,13 +2117,19 @@
       <span class="conn-dot-mini" id="connDot"></span>
       <span id="connText">Receiver …</span>
     </div>
-    <button type="button" class="icon-link" id="debugBtn" title="Open console" style="position:relative;">
-      <i class="ti ti-terminal-2"></i>
-      <span id="debugBtnBadge" style="display:none;position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s ease-in-out infinite;"></span>
-    </button>
-    <button type="button" class="icon-link" id="headerBotSettingsBtn" title="Bot configuration, system prompt, raw events" aria-label="Bot settings"><i class="ti ti-settings"></i></button>
       </div>
 </header>
+<div class="ai-settings-backdrop" id="ai-settings-backdrop" aria-hidden="true"></div>
+<div class="ai-settings-popover" id="ai-settings-popover" role="dialog" aria-label="AI Trade settings" hidden>
+  <div class="ai-settings-head">AI Trade settings</div>
+  <div class="ai-settings-row">
+    <div class="ai-settings-copy">
+      <span class="ai-settings-label">Assume full £10K pot</span>
+          <span class="ai-settings-hint">Scale all P&amp;L and deployed amounts to the full £10K primary pot. Display only — does not change live orders.</span>
+    </div>
+    <button type="button" class="ai-toggle" id="ai-full-pot-toggle" title="Recalculate P&amp;L as if the full £10,000 pot was deployed">OFF</button>
+  </div>
+</div>
 <!-- ═══════════════════════════════════════════════════════════
      AI TRADE PAGE
 ════════════════════════════════════════════════════════════ -->
@@ -2131,6 +2147,31 @@
   .ai-stat-sub .pending { color: var(--amber); }
   .ai-toggle { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--border2); border-radius: 999px; background: var(--bg3); color: var(--text2); font-size: 11px; cursor: pointer; }
   .ai-toggle.on { color: var(--green); border-color: var(--green); background: var(--green-dim); }
+  .ai-settings-active-dot {
+    position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--amber); box-shadow: 0 0 0 2px var(--bg1);
+  }
+  #headerBotSettingsBtn { position: relative; }
+  .ai-settings-popover {
+    position: fixed; z-index: 900; width: min(320px, calc(100vw - 24px));
+    background: var(--bg2); border: 1px solid var(--border2); border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45); padding: 14px;
+    max-height: calc(100vh - 24px); overflow-y: auto;
+  }
+  .ai-settings-popover[hidden] { display: none !important; }
+  .ai-settings-backdrop {
+    display: none; position: fixed; inset: 0; z-index: 899;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(2px);
+  }
+  .ai-settings-backdrop.show { display: block; }
+  .ai-settings-head {
+    font-size: 11px; font-weight: 700; color: var(--text2); text-transform: uppercase;
+    letter-spacing: 0.7px; margin-bottom: 12px;
+  }
+  .ai-settings-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .ai-settings-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .ai-settings-label { font-size: 12px; font-weight: 600; color: var(--text); }
+  .ai-settings-hint { font-size: 10px; line-height: 1.35; color: var(--text3); }
   .ai-section-title { font-size: 11px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
   .ai-section-title .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 1.8s ease-in-out infinite; }
 
@@ -2376,7 +2417,13 @@
   .ai-d-pill.sqz { color: #c084fc; background: rgba(192,132,252,0.15); }
   .ai-d-monitor { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
   .ai-d-monitor-row { display: grid; grid-template-columns: 60px 70px 70px 1fr; gap: 6px; font-family: var(--mono); font-size: 10px; padding: 4px 6px; border-radius: 4px; background: var(--bg3); }
-  .ai-d-monitor-row .dec { color: var(--green); font-weight: 700; }
+  .ai-d-monitor-row .pnl.up,
+  .ai-d-section .pnl.up { color: var(--green); font-weight: 600; }
+  .ai-d-monitor-row .pnl.down,
+  .ai-d-section .pnl.down { color: var(--red); font-weight: 600; }
+  .ai-d-monitor-row .pnl.neutral,
+  .ai-d-section .pnl.neutral { color: var(--text2); }
+  .ai-d-monitor-row .dec { color: var(--text2); font-weight: 600; }
   .ai-ta-panel-wrap { margin-top: 4px; }
   .ai-ta-panel { display: flex; flex-direction: column; gap: 32px; }
   .ai-ta-top { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
@@ -2443,9 +2490,13 @@
   .ai-ta-log-table tr.ai-ta-log-stripe td { background: rgba(15, 23, 42, 0.2); }
   .ai-ta-log-table td.time { color: var(--text2); }
   .ai-ta-log-table td.price { color: var(--text); }
-  .ai-ta-log-table td.up { color: var(--green); }
-  .ai-ta-log-table td.down { color: var(--red); }
-  .ai-ta-log-table td.dec { color: var(--green); opacity: 0.85; width: 100%; white-space: normal; }
+  .ai-ta-log-table td.pnl.up { color: var(--green); font-weight: 600; }
+  .ai-ta-log-table td.pnl.down { color: var(--red); font-weight: 600; }
+  .ai-ta-log-table td.pnl.neutral { color: var(--text2); }
+  .ai-ta-log-table td.dec { color: var(--text2); opacity: 0.92; width: 100%; white-space: normal; }
+  .ai-ta-log-table tr.exit-trigger td.dec { color: var(--amber); font-weight: 700; }
+  .ai-ta-log-table tr.tick-1s td.time { opacity: 0.75; font-size: 10px; }
+  .ai-ta-log-table tr.tick-1s td.dec { color: var(--text3); font-size: 10px; }
 
   .ai-queue, .ai-trades { display: flex; flex-direction: column; gap: 6px; max-height: 520px; overflow-y: auto; }
   .ai-queue-row { display: grid; grid-template-columns: 50px 1fr 60px 70px 70px 70px 56px; gap: 8px; padding: 8px; border-radius: 6px; background: var(--bg3); font-size: 11px; font-family: var(--mono); align-items: center; }
@@ -3687,6 +3738,8 @@ function _aiRenderStatus(s) {
   $('ai-stat-engine').textContent = eng.enabled ? 'LIVE' : 'PAUSED';
   $('ai-stat-engine').className = 'ai-stat-val ' + (eng.enabled ? 'up' : 'down');
   $('ai-stat-env').textContent = (eng.t212_env || '—').toUpperCase() + (eng.credentials_ok ? '' : ' (no key)');
+  const fullPot = !!s.full_pot_display;
+  const fullPotNote = fullPot ? ' · scaled to £10K pot' : '';
   const pnl = Number(s.today_pnl_gbp || 0);
   const pnlEl = $('ai-stat-pnl');
   pnlEl.textContent = _aiFmtMoney(pnl);
@@ -3702,9 +3755,10 @@ function _aiRenderStatus(s) {
       'Today (UK midnight): closed ' +
       _aiFmtMoney(rlz) +
       ' · open unrealized ' +
-      _aiFmtMoney(ou);
+      _aiFmtMoney(ou) +
+      fullPotNote;
   } else {
-    pnlEl.title = '';
+    pnlEl.title = fullPot ? 'Scaled to £10K primary pot' : '';
   }
   pnlEl.className = 'ai-stat-val ' + (pnl > 0 ? 'up' : pnl < 0 ? 'down' : '');
   const lifetimePnl = Number(s.lifetime_pnl_gbp || 0);
@@ -3725,9 +3779,10 @@ function _aiRenderStatus(s) {
         _aiFmtMoney(lRlz) +
         ' · open unrealized ' +
         _aiFmtMoney(lOu) +
-        (closedAll != null ? ' · ' + closedAll + ' closed' : '');
+        (closedAll != null ? ' · ' + closedAll + ' closed' : '') +
+        fullPotNote;
     } else {
-      lifetimeEl.title = '';
+      lifetimeEl.title = fullPot ? 'Scaled to £10K primary pot' : '';
     }
     lifetimeEl.className = 'ai-stat-val ' + (lifetimePnl > 0 ? 'up' : lifetimePnl < 0 ? 'down' : '');
   }
@@ -3784,6 +3839,123 @@ function _aiRenderStatus(s) {
   if (toggle) {
     toggle.classList.toggle('on', !!eng.enabled);
     toggle.textContent = eng.enabled ? 'Trading ON' : 'Trading OFF';
+  }
+  _aiSyncFullPotToggle(!!s.full_pot_display);
+}
+
+function _aiSyncFullPotToggle(on) {
+  const btn = $('ai-full-pot-toggle');
+  const dot = $('ai-settings-active-dot');
+  if (btn) {
+    btn.classList.toggle('on', on);
+    btn.textContent = on ? 'ON' : 'OFF';
+  }
+  if (dot) dot.hidden = !on;
+}
+
+function _aiPositionSettingsPopover() {
+  const pop = $('ai-settings-popover');
+  const anchor = $('headerBotSettingsBtn');
+  if (!pop || !anchor) return;
+  const margin = 12;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const popW = pop.offsetWidth || Math.min(320, vw - 24);
+  const popH = pop.offsetHeight || 120;
+  let top;
+  let left;
+  if (vw < 900) {
+    left = Math.max(margin, (vw - popW) / 2);
+    top = Math.max(margin, (vh - popH) / 2);
+  } else {
+    const r = anchor.getBoundingClientRect();
+    top = r.bottom + 8;
+    left = r.right - popW;
+    if (top + popH > vh - margin) {
+      top = Math.max(margin, r.top - popH - 8);
+    }
+    if (top < margin) top = margin;
+    if (left < margin) left = margin;
+    if (left + popW > vw - margin) left = vw - popW - margin;
+  }
+  pop.style.top = top + 'px';
+  pop.style.left = left + 'px';
+}
+
+function _aiCloseSettingsPopover() {
+  const pop = $('ai-settings-popover');
+  const backdrop = $('ai-settings-backdrop');
+  const anchor = $('headerBotSettingsBtn');
+  if (!pop) return;
+  pop.hidden = true;
+  if (backdrop) {
+    backdrop.classList.remove('show');
+    backdrop.setAttribute('aria-hidden', 'true');
+  }
+  if (anchor) anchor.setAttribute('aria-expanded', 'false');
+}
+
+function _aiToggleSettingsPopover() {
+  const pop = $('ai-settings-popover');
+  const anchor = $('headerBotSettingsBtn');
+  if (!pop) return;
+  const open = pop.hidden;
+  const backdrop = $('ai-settings-backdrop');
+  if (open) {
+    pop.hidden = false;
+    if (backdrop) {
+      backdrop.classList.add('show');
+      backdrop.setAttribute('aria-hidden', 'false');
+    }
+    requestAnimationFrame(() => {
+      _aiPositionSettingsPopover();
+      requestAnimationFrame(_aiPositionSettingsPopover);
+    });
+    if (anchor) anchor.setAttribute('aria-expanded', 'true');
+  } else {
+    _aiCloseSettingsPopover();
+  }
+}
+
+function _aiWireSettingsPopover() {
+  const anchor = $('headerBotSettingsBtn');
+  const pop = $('ai-settings-popover');
+  const fullPotBtn = $('ai-full-pot-toggle');
+  if (!anchor || !pop || anchor._wiredSettings) return;
+  anchor._wiredSettings = true;
+  anchor.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _aiToggleSettingsPopover();
+  });
+  const backdrop = $('ai-settings-backdrop');
+  if (backdrop && !backdrop._wired) {
+    backdrop._wired = true;
+    backdrop.addEventListener('click', _aiCloseSettingsPopover);
+  }
+  document.addEventListener('click', (e) => {
+    if (pop.hidden) return;
+    if (e.target.closest('#ai-settings-popover') || e.target.closest('#headerBotSettingsBtn')) return;
+    _aiCloseSettingsPopover();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') _aiCloseSettingsPopover();
+  });
+  window.addEventListener('resize', () => { if (!pop.hidden) _aiPositionSettingsPopover(); });
+  if (fullPotBtn && !fullPotBtn._wired) {
+    fullPotBtn._wired = true;
+    fullPotBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const on = !fullPotBtn.classList.contains('on');
+      _aiSyncFullPotToggle(on);
+      try {
+        await fetch('/api/ai/full-pot-display/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: on }),
+        });
+      } catch (_) { /* noop */ }
+      if (typeof _aiTick === 'function') _aiTick();
+    });
   }
 }
 
@@ -3909,7 +4081,7 @@ function _aiRenderTradeChart(series) {
 function _aiRenderMonitorLogTable(monitor, analytics) {
   const rows = Array.isArray(monitor) ? monitor : [];
   const total = rows.length || (analytics && analytics.tick_count) || 0;
-  const tail = rows.slice(-40);
+  const tail = rows.slice(-80);
   if (!tail.length) {
     return `
       <section>
@@ -3924,10 +4096,16 @@ function _aiRenderMonitorLogTable(monitor, analytics) {
     const t = row.ts ? new Date(Number(row.ts) * 1000).toLocaleTimeString('en-GB', { hour12: false }) : '—';
     const pct = row.unreal_pct;
     const pnlStr = pct == null ? '—' : _aiFmtPctSigned(pct);
-    const pnlCls = pct == null ? '' : (Number(pct) >= 0 ? 'up' : 'down');
-    const details = escapeHtml(String(row.ai_decision || row.raw_response || ''));
+    const pnlCls = _aiPnlColorClass(pct);
+    const raw = String(row.raw_response || '');
+    const isExit = raw === 'exit_trigger';
+    const isTick = raw === 'tick_1s';
+    const details = isTick
+      ? '1s tick'
+      : escapeHtml(String(row.ai_decision || (isExit ? '' : raw) || ''));
     const stripe = idx % 2 === 1 ? ' ai-ta-log-stripe' : '';
-    return `<tr class="${stripe}"><td class="time">${t}</td><td class="price">${_aiFmtPrice(row.price)}</td><td class="${pnlCls}">${pnlStr}</td><td class="dec">${details}</td></tr>`;
+    const rowCls = `${stripe}${isExit ? ' exit-trigger' : ''}${isTick ? ' tick-1s' : ''}`.trim();
+    return `<tr class="${rowCls}"><td class="time">${t}</td><td class="price">${_aiFmtPrice(row.price)}</td><td class="pnl ${pnlCls}">${pnlStr}</td><td class="dec">${details}</td></tr>`;
   }).join('');
   return `
     <section>
@@ -4120,6 +4298,7 @@ function _aiRenderSlots(sl) {
 
 let _aiFeedFilter = '';
 let _aiFeedItems = [];
+let _aiFeedTradeItems = [];
 let _aiFeedDay = localStorage.getItem('aiFeedDay') || 'today';
 
 function _aiFeedDayQuery() {
@@ -4231,10 +4410,10 @@ function _aiFeedBucket(m) {
   const label = m.active_label || '';
   const st = m.grader_state || '';
   if (label === 'TRADED' || st === 'TRADED' || m.decision === 'CLOSED') return 'filtered';
-  if (m.decision === 'TRADE' || label === 'TRADE' || st === 'TRADE') return 'trade';
   if (_aiFeedIsActive(m)) return 'active';
   if (label === 'FILTERED' || st === 'PASS' || st === 'DISQUALIFIED') return 'filtered';
   if (m.decision === 'SKIP') return 'filtered';
+  if (m.decision === 'TRADE' || label === 'TRADE' || st === 'TRADE') return 'filtered';
   return 'active';
 }
 
@@ -4242,20 +4421,25 @@ function _aiFeedIsFiltered(m) {
   return _aiFeedBucket(m) === 'filtered';
 }
 
-function _aiFeedRow(m) {
+function _aiFeedRow(m, sectionKey) {
   const t = m.ts ? new Date(m.ts * 1000) : null;
   const time = t ? t.toLocaleTimeString('en-GB', { hour12: false }) : '—';
   const type = m.type || 'UNKNOWN';
   const p = m.parsed || {};
   const label = m.active_label || '';
+  const inTradeSection = sectionKey === 'trade';
+  const aiTradeDecision = m.alert_decision === 'TRADE' || (inTradeSection && m.decision === 'TRADE');
   const isTraded = label === 'TRADED' || m.grader_state === 'TRADED' || m.decision === 'CLOSED';
-  const isTrade = !isTraded && (m.decision === 'TRADE' || label === 'TRADE' || m.grader_state === 'TRADE');
+  const isTrade = !isTraded && (aiTradeDecision || m.decision === 'TRADE' || label === 'TRADE' || m.grader_state === 'TRADE');
   const isFiltered = _aiFeedIsFiltered(m);
 
   let tag = label || '';
   let cls = 'skip';
   if (isTraded) { tag = 'TRADED'; cls = 'trade-closed'; }
-  else if (isTrade) { tag = tag || 'TRADE'; cls = 'trade'; }
+  else if (isTrade) {
+    tag = aiTradeDecision ? 'TRADE' : (tag || 'TRADE');
+    cls = 'trade';
+  }
   else if (tag === 'REVIEW WATCH' || m.decision === 'WATCH') { tag = tag || 'REVIEW WATCH'; cls = 'watch'; }
   else if (tag === 'REVIEW') { cls = 'watch'; }
   else if (tag === 'WATCHING') { cls = 'watch-news'; }
@@ -4303,7 +4487,11 @@ function _aiFeedRow(m) {
                   isFiltered ? 'filtered' : (isTrade ? 'trade' : '')]
                  .filter(Boolean).join(' ');
   const info = m.alert_id ? `<i class="ti ti-info-circle ai-feed-info"></i>` : '';
-  const titleAttr = (m.raw || '').replace(/"/g,'&quot;');
+  let titleAttr = (m.raw || '').replace(/"/g,'&quot;');
+  if (inTradeSection && aiTradeDecision && label && label !== 'TRADE' && label !== 'TRADED') {
+    const nowNote = 'Current status: ' + label;
+    titleAttr = titleAttr ? (titleAttr + ' · ' + nowNote) : nowNote;
+  }
 
   return `
     <div class="${rowCls} ai-feed-cols" data-alert-id="${m.alert_id || ''}" data-ticker="${m.ticker || ''}" title="${titleAttr}">
@@ -4353,7 +4541,7 @@ function _aiFeedSection(title, items, cls, sectionKey) {
       </button>
       <div class="ai-feed-section-body">
         ${_AI_FEED_COLHEAD}
-        ${items.map(_aiFeedRow).join('')}
+        ${items.map((m) => _aiFeedRow(m, sectionKey)).join('')}
       </div>
     </div>
   `;
@@ -4368,6 +4556,7 @@ function _aiRenderFeed(fd) {
     .filter((m) => m.type !== 'OFFERING' || Number(m.alerts_processed || 0) > 0)
     .slice();
   _aiFeedItems = items;
+  _aiFeedTradeItems = ((fd && fd.trade_items) || []).slice();
   _aiFeedRefreshTickerList();
   _aiFeedRender();
   _aiFeedWire();
@@ -4378,6 +4567,7 @@ function _aiFeedRefreshTickerList() {
   if (!dl) return;
   const seen = new Set();
   for (const m of _aiFeedItems) if (m.ticker) seen.add(m.ticker.toUpperCase());
+  for (const m of _aiFeedTradeItems) if (m.ticker) seen.add(m.ticker.toUpperCase());
   const tickers = Array.from(seen).sort();
   dl.innerHTML = tickers.map((t) => `<option value="${t}">`).join('');
 }
@@ -4392,9 +4582,13 @@ function _aiFeedRender() {
     return _aiFeedDay || 'Today';
   })();
   let items = _aiFeedItems;
-  if (filter) items = items.filter((m) => (m.ticker || '').toUpperCase().includes(filter));
+  let trade = _aiFeedTradeItems.slice();
+  if (filter) {
+    items = items.filter((m) => (m.ticker || '').toUpperCase().includes(filter));
+    trade = trade.filter((m) => (m.ticker || '').toUpperCase().includes(filter));
+  }
 
-  if (!items.length) {
+  if (!items.length && !trade.length) {
     const emptyMsg = filter
       ? 'No alerts for ' + filter + ' on ' + dayLabel
       : 'No scanner messages for ' + dayLabel;
@@ -4402,11 +4596,13 @@ function _aiFeedRender() {
     return;
   }
 
-  const active = [], trade = [], filtered = [];
+  const tradeTickers = new Set(trade.map((m) => (m.ticker || '').toUpperCase()).filter(Boolean));
+  const active = [], filtered = [];
   for (const m of items) {
+    const tk = (m.ticker || '').toUpperCase();
+    if (tradeTickers.has(tk)) continue;
     const bucket = _aiFeedBucket(m);
-    if (bucket === 'trade') trade.push(m);
-    else if (bucket === 'filtered') filtered.push(m);
+    if (bucket === 'filtered') filtered.push(m);
     else active.push(m);
   }
 
@@ -4907,7 +5103,7 @@ function _aiRenderDrawer(r) {
               <div class="ai-d-monitor-row">
                 <span>${new Date(x.ts * 1000).toLocaleTimeString('en-GB', { hour12: false })}</span>
                 <span>${_aiFmtPrice(x.price)}</span>
-                <span>${_aiFmtPct(x.unreal_pct)}</span>
+                <span class="pnl ${_aiPnlColorClass(x.unreal_pct)}">${_aiFmtPct(x.unreal_pct)}</span>
                 <span class="dec">${x.raw_response || x.ai_decision || ''}</span>
               </div>
             `).join('')}
@@ -5174,6 +5370,14 @@ function _aiFmtPctSigned(n, digits) {
   const d = digits != null ? digits : 2;
   const v = Number(n);
   return `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`;
+}
+
+function _aiPnlColorClass(n) {
+  if (n == null || Number.isNaN(Number(n))) return 'neutral';
+  const v = Number(n);
+  if (v < 0) return 'down';
+  if (v > 0) return 'up';
+  return 'neutral';
 }
 
 async function _aiOpenWatchHistoryDrawer(histId) {
@@ -5475,10 +5679,11 @@ function _aiRenderWatchHistoryDrawer(r) {
       const tail = ml.slice(-40);
       const rows = tail
         .map((row) => {
-          const unreal = row.unreal_pct == null ? '—' : `${Number(row.unreal_pct).toFixed(2)}%`;
+          const unreal = row.unreal_pct == null ? '—' : _aiFmtPctSigned(row.unreal_pct);
+          const pnlCls = _aiPnlColorClass(row.unreal_pct);
           const act = escapeHtml(row.ai_decision || '—');
           const raw = escapeHtml(String(row.raw_response || '').slice(0, 220));
-          return `<tr style="vertical-align:top;"><td style="white-space:nowrap;color:var(--text3);font-size:10px;">${dt(row.ts)}</td><td>${fmt(row.price)}</td><td>${unreal}</td><td><b>${act}</b></td><td style="font-size:10px;color:var(--text2);">${raw}</td></tr>`;
+          return `<tr style="vertical-align:top;"><td style="white-space:nowrap;color:var(--text3);font-size:10px;">${dt(row.ts)}</td><td>${fmt(row.price)}</td><td class="pnl ${pnlCls}">${unreal}</td><td><b>${act}</b></td><td style="font-size:10px;color:var(--text2);">${raw}</td></tr>`;
         })
         .join('');
       html += `
@@ -5689,6 +5894,7 @@ function showPage(name) {
 
 document.addEventListener('DOMContentLoaded', () => {
   _initMarketClock();
+  _aiWireSettingsPopover();
   const wipeBtn = $('ai-wipe-all-btn');
   if (wipeBtn && !wipeBtn._wired) {
     wipeBtn._wired = true;

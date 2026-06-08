@@ -170,6 +170,17 @@ class Engine:
     # ── main loop ────────────────────────────────────────────────────────
     async def run(self) -> None:
         db.init()
+        try:
+            n_ticks = db.monitor_log_backfill_all_exit_ticks()
+            n_audit = db.repair_unfinalized_trade_audits()
+            if n_ticks or n_audit:
+                _log.info(
+                    "startup backfill: exit_ticks=%d trade_audits_repaired=%d",
+                    n_ticks,
+                    n_audit,
+                )
+        except Exception:
+            _log.exception("startup monitor/audit backfill failed")
         _log.info(
             "AI sandbox engine starting (enabled=%s, creds_ok=%s, env=%s)",
             config.trading_enabled(),
@@ -231,27 +242,20 @@ class Engine:
         failed and no new alert arrived to trigger the inline recovery).
         """
         await asyncio.sleep(8.0)
-        try:
-            from .grader import reconcile
-
-            n = await reconcile.run_backfill(self)
-            if n:
-                self._score_count += n
-                _log.info("grader backfill complete: %d graded", n)
-        except Exception:
-            _log.exception("grader backfill loop failed")
-
-        # Periodic PENDING_AI sweep — runs every 2 minutes throughout the session.
         while True:
-            await asyncio.sleep(120.0)
             try:
                 from .grader import reconcile as _rec
 
+                n = await _rec.run_backfill(self)
+                if n:
+                    self._score_count += n
+                    _log.info("grader backfill complete: %d graded", n)
                 cleared = _rec.clear_stale_pending_ai()
                 if cleared:
                     _log.info("stale PENDING_AI sweep cleared %d ticker(s)", cleared)
             except Exception:
-                _log.exception("stale PENDING_AI sweep failed")
+                _log.exception("grader backfill loop failed")
+            await asyncio.sleep(120.0)
 
     # ── periodic ticker-map refresh (6h TTL is internal) ─────────────────
     async def _ticker_map_refresher(self) -> None:

@@ -1686,12 +1686,11 @@ def trade_audit_finalize(
         (trade_id,),
     )
     trow = fetchone("SELECT * FROM trades WHERE id=?", (trade_id,))
-    mon_rows = fetchall(
-        """SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log
-            WHERE trade_id=? ORDER BY ts ASC""",
-        (trade_id,),
-    )
-    mon = [dict(x) for x in mon_rows]
+    try:
+        monitor_log_ensure_exit_ticks(int(trade_id), exit_ts=float(exit_ts))
+    except Exception:
+        _log.debug("monitor_log_ensure_exit_ticks on finalize failed trade_id=%s", trade_id)
+    mon = monitor_log_for_trade(int(trade_id))
 
     base: dict[str, Any] = {}
     init_sc: int | None = None
@@ -1802,6 +1801,161 @@ def trade_audit_finalize(
         grader_state.mark_traded_from_trade_id(int(trade_id), ts=float(exit_ts))
     except Exception:
         _log.debug("mark_traded_from_trade_id failed id=%s", trade_id)
+
+
+MONITOR_RAW_TICK_1S = "tick_1s"
+MONITOR_RAW_EXIT_TRIGGER = "exit_trigger"
+
+
+def _monitor_log_has_ts_near(existing: list[float], ts: float, *, tol: float = 0.25) -> bool:
+    return any(abs(float(ts) - float(e)) <= tol for e in existing)
+
+
+def monitor_log_ensure_exit_ticks(
+    trade_id: int,
+    *,
+    exit_ts: float | None = None,
+    window_sec: float = 30.0,
+) -> int:
+    """Backfill 1s ``trade_ticks`` and an exit marker into ``monitor_log`` (idempotent)."""
+    row = fetchone(
+        """SELECT status, exit_ts, exit_price, exit_reason, entry_price, pnl_pct
+             FROM trades WHERE id=?""",
+        (int(trade_id),),
+    )
+    if not row:
+        return 0
+    tr = dict(row)
+    st = str(tr.get("status") or "").upper()
+    if st not in ("SELL_PENDING", "CLOSED"):
+        return 0
+    end = float(exit_ts if exit_ts is not None else (tr.get("exit_ts") or 0))
+    if end <= 0:
+        return 0
+    start = end - float(window_sec)
+    existing_rows = fetchall("SELECT ts FROM monitor_log WHERE trade_id=?", (int(trade_id),))
+    existing_ts = [float(r["ts"]) for r in existing_rows]
+    inserted = 0
+    ticks = fetchall(
+        """SELECT ts, price, unreal_pct FROM trade_ticks
+            WHERE trade_id=? AND ts >= ? AND ts <= ?
+            ORDER BY ts ASC""",
+        (int(trade_id), start, end),
+    )
+    for t in ticks:
+        td = dict(t)
+        ts = float(td["ts"])
+        if _monitor_log_has_ts_near(existing_ts, ts):
+            continue
+        execute(
+            """INSERT INTO monitor_log(trade_id, ts, price, unreal_pct, ai_decision, raw_response)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                int(trade_id),
+                ts,
+                td.get("price"),
+                td.get("unreal_pct"),
+                None,
+                MONITOR_RAW_TICK_1S,
+            ),
+        )
+        existing_ts.append(ts)
+        inserted += 1
+    if not fetchone(
+        "SELECT 1 FROM monitor_log WHERE trade_id=? AND raw_response=? LIMIT 1",
+        (int(trade_id), MONITOR_RAW_EXIT_TRIGGER),
+    ):
+        reason = str(tr.get("exit_reason") or "exit").strip()
+        exit_px = tr.get("exit_price")
+        exit_pct = tr.get("pnl_pct")
+        if exit_pct is None and exit_px and tr.get("entry_price"):
+            try:
+                ent = float(tr["entry_price"])
+                px = float(exit_px)
+                if ent > 0:
+                    exit_pct = round((px - ent) / ent * 100.0, 4)
+            except (TypeError, ValueError):
+                exit_pct = None
+        execute(
+            """INSERT INTO monitor_log(trade_id, ts, price, unreal_pct, ai_decision, raw_response)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                int(trade_id),
+                end,
+                exit_px,
+                exit_pct,
+                f"SELL · {reason}",
+                MONITOR_RAW_EXIT_TRIGGER,
+            ),
+        )
+        inserted += 1
+    return inserted
+
+
+def monitor_log_backfill_all_exit_ticks(*, window_sec: float = 30.0) -> int:
+    """One-shot backfill of pre-exit ticks for every closed/sell-pending trade."""
+    rows = fetchall(
+        """SELECT id FROM trades
+            WHERE status IN ('CLOSED', 'SELL_PENDING')
+              AND exit_ts IS NOT NULL AND exit_ts > 0
+            ORDER BY id ASC""",
+    )
+    total = 0
+    for r in rows:
+        tid = int(r["id"])
+        try:
+            total += monitor_log_ensure_exit_ticks(tid, window_sec=window_sec)
+        except Exception:
+            _log.exception("monitor_log exit tick backfill failed trade_id=%s", tid)
+    return total
+
+
+def monitor_log_for_trade(trade_id: int, *, window_sec: float = 30.0) -> list[dict[str, Any]]:
+    """Monitor rows for a trade, ensuring the final window of 1s ticks is present."""
+    try:
+        monitor_log_ensure_exit_ticks(int(trade_id), window_sec=window_sec)
+    except Exception:
+        _log.debug("monitor_log_ensure_exit_ticks failed trade_id=%s", trade_id)
+    return [
+        dict(r)
+        for r in fetchall(
+            """SELECT ts, price, unreal_pct, ai_decision, raw_response FROM monitor_log
+                WHERE trade_id=? ORDER BY ts ASC""",
+            (int(trade_id),),
+        )
+    ]
+
+
+def repair_unfinalized_trade_audits() -> int:
+    """Close out ``TRADE_OPEN`` watch rows for trades already CLOSED at the broker."""
+    rows = fetchall(
+        """SELECT t.id, t.exit_ts, t.exit_reason, t.t212_close_order_id
+             FROM trades t
+            WHERE t.status='CLOSED'
+              AND t.exit_ts IS NOT NULL
+              AND NOT EXISTS (
+                    SELECT 1 FROM watch_history w
+                     WHERE w.trade_id=t.id AND w.episode_type='TRADE'
+                       AND w.reason='TRADE_CLOSED'
+              )
+            ORDER BY t.id ASC""",
+    )
+    n = 0
+    for r in rows:
+        tid = int(r["id"])
+        try:
+            monitor_log_ensure_exit_ticks(tid)
+            trade_audit_finalize(
+                tid,
+                exit_ts=float(r["exit_ts"]),
+                exit_reason=str(r["exit_reason"] or "market_sell"),
+                risk_at_exit={"repaired_audit": True},
+                close_order_id=str(r["t212_close_order_id"] or "") or None,
+            )
+            n += 1
+        except Exception:
+            _log.exception("repair_unfinalized_trade_audits failed trade_id=%s", tid)
+    return n
 
 
 def monitor_log_append(

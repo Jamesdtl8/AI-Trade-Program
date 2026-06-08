@@ -353,6 +353,71 @@ def persist_ai_trading_enabled(enabled: bool) -> None:
     os.environ["AI_TRADING_ENABLED"] = "1" if enabled else "0"
 
 
+_FULL_POT_DISPLAY_STATE = DATA_DIR / "full_pot_display_state"
+
+
+def full_pot_display_enabled() -> bool:
+    """Dashboard toggle: scale P&L and deployed amounts to the £10K primary pot.
+
+    When T212 caps a fill below £10,000 (or a trade lands in the £4K secondary
+    pot), the UI can show values as if the full £10K primary pot had been deployed.
+    Does not change live trading or broker orders — display only.
+    """
+    if _FULL_POT_DISPLAY_STATE.is_file():
+        try:
+            v = _FULL_POT_DISPLAY_STATE.read_text(encoding="utf-8").strip().lower()
+            if v:
+                return v not in ("0", "false", "no", "off")
+        except OSError:
+            pass
+    return False
+
+
+def persist_full_pot_display_enabled(enabled: bool) -> None:
+    """Persist full-pot display mode across restarts."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _FULL_POT_DISPLAY_STATE.write_text("1" if enabled else "0", encoding="ascii")
+
+
+def pot_target_gbp_for_slot(slot_index: int) -> float:
+    """Nominal pot size for a slot (pot 0 = £10,000, pot 1 = £4,000)."""
+    try:
+        return float(POT_CAPITALS_GBP[int(slot_index)])
+    except (IndexError, TypeError, ValueError):
+        return float(POT_CAPITALS_GBP[0])
+
+
+def full_pot_display_target_gbp() -> float:
+    """Display normalization target — always the primary £10K pot."""
+    return float(POT_CAPITALS_GBP[0])
+
+
+def full_pot_scale_factor(deployed_gbp: float | None, slot_index: int = 0) -> float:
+    """Multiplier to normalize capped fills to the £10K primary pot (slot ignored)."""
+    del slot_index  # display mode always assumes primary pot
+    if not full_pot_display_enabled():
+        return 1.0
+    deployed = float(deployed_gbp or 0.0)
+    if deployed <= 0:
+        return 1.0
+    target = full_pot_display_target_gbp()
+    if deployed >= target:
+        return 1.0
+    return target / deployed
+
+
+def scale_gbp_for_full_pot(
+    amount: float | None,
+    deployed_gbp: float | None,
+    slot_index: int = 0,
+) -> float | None:
+    """Scale a GBP P&L or notional to the full pot when display mode is on."""
+    if amount is None:
+        return None
+    factor = full_pot_scale_factor(deployed_gbp, slot_index)
+    return round(float(amount) * factor, 2)
+
+
 def ai_t212_instrument_map_ttl_seconds() -> float:
     """Seconds between T212 ``/equity/metadata/instruments`` map refreshes (default 1 hour).
 
@@ -559,7 +624,41 @@ RECONCILE_ORPHAN_SUPPRESS_SECONDS = reconcile_orphan_suppress_seconds()
 # Do not stop-loss broker-adopted orphans immediately (they may already be underwater).
 RECONCILE_STOP_GRACE_SECONDS = 1800
 EXIT_FLAT_POLL_TIMEOUT_S = 45.0
-MAX_STOP_LOSS_PCT = 15.0   # hard cap — engine clamps scorer stop so it can never sit deeper than entry × (1 - MAX_STOP_LOSS_PCT/100)
+def max_stop_loss_pct() -> float:
+    """Hard stop-loss % below entry (engine + position monitor)."""
+    raw = (_env("AI_MAX_STOP_LOSS_PCT", "10")).strip()
+    try:
+        v = float(raw)
+        return v if 0 < v <= 50 else 10.0
+    except ValueError:
+        return 10.0
+
+
+MAX_STOP_LOSS_PCT = max_stop_loss_pct()   # entry × (1 - pct/100) floor; scorer stop clamped here
+
+
+def peak_giveback_cap_pct() -> float:
+    """Max peak-gain giveback (pp) before runner exit once arm threshold is reached."""
+    raw = (_env("AI_PEAK_GIVEBACK_CAP_PCT", "25")).strip()
+    try:
+        v = float(raw)
+        return v if 0 < v <= 80 else 25.0
+    except ValueError:
+        return 25.0
+
+
+def peak_giveback_arm_pct() -> float:
+    """Peak gain % (from entry) that arms the giveback cap (replaces trail on runners)."""
+    raw = (_env("AI_PEAK_GIVEBACK_ARM_PCT", "50")).strip()
+    try:
+        v = float(raw)
+        return v if 0 < v <= 500 else 50.0
+    except ValueError:
+        return 50.0
+
+
+PEAK_GIVEBACK_CAP_PCT = peak_giveback_cap_pct()
+PEAK_GIVEBACK_ARM_PCT = peak_giveback_arm_pct()
 
 
 def take_profit_pct() -> float:

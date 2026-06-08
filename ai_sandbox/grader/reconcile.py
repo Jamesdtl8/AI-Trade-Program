@@ -26,35 +26,57 @@ def _parsed_alert(row: dict[str, Any]) -> dict[str, Any]:
     return alert
 
 
-def sync_ticker_from_db(ticker: str, *, day0: float | None = None) -> dict[str, Any] | None:
-    """Rebuild accumulated alerts in ticker_states from SQLite alert rows."""
-    tk = ticker.upper()
+def _load_filtered_episode_rows(
+    ticker: str,
+    *,
+    day0: float,
+    for_backfill: bool = False,
+) -> list[dict[str, Any]]:
+    """DB alert rows that survive hard filters, with snapshot + id for backfill.
 
-    start = float(day0 if day0 is not None else config.uk_day_start_ts())
+    When ``for_backfill`` is true, keep ``rv_too_low`` alerts in the chain so
+    alert-#2 reactive windows are not lost after an RV recovery (e.g. NWGL).
+    """
     rows = db.fetchall(
         """SELECT id, ts, type, parsed_json
              FROM alerts
             WHERE UPPER(ticker)=? AND ts >= ?
               AND type IN ('SCANNER', 'SCANNER_EDIT', 'NEWS_TESTER')
             ORDER BY id ASC""",
-        (tk, start),
+        (ticker.upper(), day0),
     )
-    if not rows:
-        return None
-
-    snapshots: list[dict[str, Any]] = []
-    float_val = None
+    episode: list[dict[str, Any]] = []
     for row in rows:
         parsed = _parsed_alert(dict(row))
         if hard_rules.is_nbreak_event(parsed):
             continue
-        if hard_rules.hard_disqualify(parsed)[0]:
+        eliminated, reason = hard_rules.hard_disqualify(parsed)
+        if eliminated and not (for_backfill and reason == "rv_too_low"):
             continue
-        snapshots.append(processor.alert_snapshot(parsed, ts=float(row["ts"])))
-        float_val = parsed.get("float") or float_val
+        episode.append(
+            {
+                "id": int(row["id"]),
+                "ts": float(row["ts"]),
+                "parsed": parsed,
+                "snapshot": processor.alert_snapshot(parsed, ts=float(row["ts"])),
+            }
+        )
+    return episode
 
-    if not snapshots:
+
+def sync_ticker_from_db(ticker: str, *, day0: float | None = None) -> dict[str, Any] | None:
+    """Rebuild accumulated alerts in ticker_states from SQLite alert rows."""
+    tk = ticker.upper()
+
+    start = float(day0 if day0 is not None else config.uk_day_start_ts())
+    episode = _load_filtered_episode_rows(tk, day0=start)
+    if not episode:
         return None
+
+    snapshots = [e["snapshot"] for e in episode]
+    float_val = None
+    for e in episode:
+        float_val = e["parsed"].get("float") or float_val
 
     st_row = ticker_state.get_or_create(tk)
     st = str(st_row.get("state") or "NEW")
@@ -93,6 +115,30 @@ def _last_graded_alert_number(ticker: str, *, day0: float) -> int:
     return int(row["n"] or 0) if row else 0
 
 
+def _find_missed_grade_target(
+    st_row: dict[str, Any],
+    episode: list[dict[str, Any]],
+    *,
+    last_graded: int,
+) -> dict[str, Any] | None:
+    """Latest ungraded alert index where hard rules would have sent to GPT."""
+    best: dict[str, Any] | None = None
+    for n in range(max(last_graded + 1, 2), len(episode) + 1):
+        prefix = [e["snapshot"] for e in episode[:n]]
+        synth_state = {**st_row, "alerts": prefix}
+        entry = episode[n - 1]
+        ready, why = hard_rules.should_send_to_ai(synth_state, entry["parsed"])
+        if ready:
+            best = {
+                "alert_number": n,
+                "alert_id": int(entry["id"]),
+                "alert": entry["parsed"],
+                "why": f"missed_{why}",
+                "missed_window": True,
+            }
+    return best
+
+
 def list_backfill_candidates(*, day0: float | None = None) -> list[dict[str, Any]]:
     start = float(day0 if day0 is not None else config.uk_day_start_ts())
     tickers = db.fetchall(
@@ -123,43 +169,46 @@ def list_backfill_candidates(*, day0: float | None = None) -> list[dict[str, Any
         ):
             continue
 
-        alerts = list(st_row.get("alerts") or [])
-        if len(alerts) < 2:
-            continue
-
-        last_row = db.fetchone(
-            """SELECT id, ts, type, parsed_json FROM alerts
-                WHERE UPPER(ticker)=? AND ts >= ?
-                  AND type IN ('SCANNER', 'SCANNER_EDIT', 'NEWS_TESTER')
-                ORDER BY id DESC LIMIT 1""",
-            (tk, start),
-        )
-        if not last_row:
-            continue
-        latest = _parsed_alert(dict(last_row))
-        if hard_rules.is_nbreak_event(latest) or hard_rules.hard_disqualify(latest)[0]:
-            latest = alerts[-1]
-            alert_id = int(last_row["id"])
-        else:
-            alert_id = int(last_row["id"])
-
-        ready, why = hard_rules.should_send_to_ai(st_row, latest)
-        if not ready:
+        episode = _load_filtered_episode_rows(tk, day0=start, for_backfill=True)
+        if len(episode) < 2:
             continue
 
         last_graded = _last_graded_alert_number(tk, day0=start)
-        alert_n = len(alerts)
-        if alert_n <= last_graded and str(st_row.get("state") or "") not in ("PASS",):
+        st = str(st_row.get("state") or "")
+        allow_regrade = st in ("PASS",)
+
+        latest_entry = episode[-1]
+        ready, why = hard_rules.should_send_to_ai(st_row, latest_entry["parsed"])
+        if ready:
+            alert_n = len(episode)
+            if alert_n > last_graded or allow_regrade:
+                out.append(
+                    {
+                        "ticker": tk,
+                        "alert_id": int(latest_entry["id"]),
+                        "alert": latest_entry["parsed"],
+                        "why": why,
+                        "alert_number": alert_n,
+                        "last_graded": last_graded,
+                        "missed_window": False,
+                        "grade_alerts": [e["snapshot"] for e in episode],
+                    }
+                )
             continue
 
+        missed = _find_missed_grade_target(st_row, episode, last_graded=last_graded)
+        if not missed:
+            continue
+        if int(missed["alert_number"]) <= last_graded and not allow_regrade:
+            continue
+
+        n = int(missed["alert_number"])
         out.append(
             {
+                **missed,
                 "ticker": tk,
-                "alert_id": alert_id,
-                "alert": latest,
-                "why": why,
-                "alert_number": alert_n,
                 "last_graded": last_graded,
+                "grade_alerts": [e["snapshot"] for e in episode[:n]],
             }
         )
     out.sort(key=lambda x: (-int(x["alert_number"]), x["ticker"]))
@@ -224,6 +273,7 @@ async def run_backfill(engine: Any) -> int:
                 alert_id=int(item["alert_id"]),
                 recent_entry=recent_entry,
                 skip_append=True,
+                grade_alerts=item.get("grade_alerts"),
             )
             if not decision:
                 _log.info("grader backfill skip %s (%s)", tk, recent_entry.get("defer_reason"))
@@ -236,7 +286,11 @@ async def run_backfill(engine: Any) -> int:
                 decision.get("decision"),
                 item["why"],
             )
-            if decision.get("decision") == "TRADE" and hasattr(engine, "_try_open_trade"):
+            if (
+                decision.get("decision") == "TRADE"
+                and not item.get("missed_window")
+                and hasattr(engine, "_try_open_trade")
+            ):
                 try:
                     from .. import discord_notifier
                     import asyncio as _asyncio

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 _LABELS: dict[str, str] = {
     # Exit reasons
-    "stop_loss_10pct": "Hit Stop Loss 15%",
+    "stop_loss_10pct": "Hit Stop Loss 10%",
     "tp_market": "Take Profit (market sell)",
     "trail_breach": "Trailing Stop Hit",
-    "hard_stop_10pct": "Hit Hard Stop 15%",
+    "hard_stop_10pct": "Hit Hard Stop 10%",
     "market_sell": "Market Sell",
     "slots_full": "Unable due to Slots Full",
     # Grader disqualify
@@ -89,6 +89,15 @@ def humanize(code: str | None, *, fallback: str | None = None) -> str:
         peak_str = peak_part.replace("peak", "+").replace("pct", "%") if peak_part else ""
         detail = " | ".join(filter(None, [f"trail {trail_str}", f"peak {peak_str}"]))
         return f"Trailing Stop Hit ({detail})"
+    if key.startswith("peak_giveback_"):
+        # e.g. peak_giveback_25pct_peak97.3pct
+        parts = key.split("_")
+        cap_part = next((p for p in parts if p.endswith("pct") and "peak" not in p), None)
+        peak_part = next((p for p in parts if p.startswith("peak")), None)
+        cap_str = cap_part.replace("pct", "pp") if cap_part else ""
+        peak_str = peak_part.replace("peak", "+").replace("pct", "%") if peak_part else ""
+        detail = " | ".join(filter(None, [f"max giveback {cap_str}", f"peak {peak_str}"]))
+        return f"Runner Giveback Cap ({detail})"
     if key.startswith("sell_in_flight"):
         return "Deferred — sell order in flight (SELL_PENDING)"
     if key.startswith("watch_momentum_regrade"):
