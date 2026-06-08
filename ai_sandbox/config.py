@@ -444,6 +444,57 @@ POT_CAPITALS_GBP: list[float] = [10_000.0, 4_000.0]
 POT_TOTAL_GBP: float = sum(POT_CAPITALS_GBP)  # 14 000
 SLOT_CAPITAL_GBP = POT_CAPITALS_GBP[0]  # fallback (primary-pot size) when T212 cash unavailable
 
+
+def candle_model_enabled() -> bool:
+    """Use 1m candle-close confirmation model instead of the AI grader execution path."""
+    return _env("AI_CANDLE_MODEL", "1").strip().lower() in ("1", "true", "yes")
+
+
+def candle_entry_gap_pct() -> float:
+    """Entry trigger = alert price × (1 + gap/100). Default 3%."""
+    raw = (_env("AI_CANDLE_ENTRY_GAP_PCT", "3")).strip()
+    try:
+        v = float(raw)
+        return v if 0 < v <= 50 else 3.0
+    except ValueError:
+        return 3.0
+
+
+def candle_stake_gbp() -> float:
+    """Fixed £ stake per candle-model trade (default £10,000)."""
+    raw = (_env("AI_CANDLE_STAKE_GBP", "10000")).strip()
+    try:
+        v = float(raw)
+        return v if v > 0 else 10_000.0
+    except ValueError:
+        return 10_000.0
+
+
+def candle_poll_seconds() -> float:
+    """How often to poll yfinance 1m candles for active setups."""
+    raw = (_env("AI_CANDLE_POLL_SECONDS", "15")).strip()
+    try:
+        v = float(raw)
+        return max(5.0, min(60.0, v))
+    except ValueError:
+        return 15.0
+
+
+def us_after_hours_complete() -> bool:
+    """True after US extended session ends (20:00 ET Mon–Fri) or on weekends."""
+    from datetime import datetime
+
+    try:
+        import zoneinfo
+
+        et = datetime.now(zoneinfo.ZoneInfo("America/New_York"))
+    except Exception:
+        return False
+    if et.weekday() >= 5:
+        return True
+    return et.hour * 60 + et.minute >= 1200
+
+
 # Rough FX: £ → USD for slot sizing; inverse used to store/show deployed £ (qty × $ entry).
 GBP_USD_RATE = 1.27
 

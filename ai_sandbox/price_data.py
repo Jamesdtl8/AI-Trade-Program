@@ -101,12 +101,47 @@ def quote(symbol: str) -> dict[str, Any]:
     return _direct_quote(symbol)
 
 
+def yahoo_symbol(ticker: str) -> str:
+    """Best-effort Yahoo symbol for a scanner / T212 ticker."""
+    tk = (ticker or "").strip().upper()
+    if not tk:
+        return ""
+    if tk.endswith("_US_EQ"):
+        tk = tk.split("_", 1)[0]
+    return tk.lstrip("$")
+
+
+def _parse_bar_ts(iso: str) -> float | None:
+    if not iso:
+        return None
+    try:
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
 def candles_1m(symbol: str, count: int = 20) -> list[dict[str, Any]]:
     """Return last ``count`` × 1m candles as compact dicts (uses shared cache)."""
-    bars = _shared_history(symbol, "1MIN") or []
+    bars = _shared_history(yahoo_symbol(symbol) or symbol, "1MIN") or []
     if not bars:
         return []
-    return bars[-count:]
+    out = []
+    for b in bars[-count:]:
+        row = dict(b)
+        ts = _parse_bar_ts(str(row.get("t") or ""))
+        if ts is not None:
+            row["ts"] = ts
+        out.append(row)
+    return out
+
+
+def candles_1m_after(symbol: str, since_ts: float, *, count: int = 120) -> list[dict[str, Any]]:
+    """1m candles with bar close timestamp strictly after ``since_ts``."""
+    bars = candles_1m(symbol, count=count)
+    return [b for b in bars if float(b.get("ts") or 0) > float(since_ts)]
 
 
 def last_price(symbol: str) -> float | None:

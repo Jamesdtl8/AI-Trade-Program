@@ -14,6 +14,7 @@ from typing import Any
 from .grader import processor as grader_processor
 from . import (
     alert_parser,
+    candle_monitor,
     config,
     db,
     discord_notifier,
@@ -131,6 +132,7 @@ class Engine:
         self.mgr = SlotManager()
         self._trade_lock = asyncio.Lock()
         self._monitor_tasks: dict[int, asyncio.Task] = {}
+        self._candle_tasks: dict[int, asyncio.Task] = {}
         self._scanner_recent: list[dict[str, Any]] = []
         self._scanner_recent_max = 200
         self._api_spend_today_gbp = 0.0
@@ -144,10 +146,14 @@ class Engine:
             "enabled": config.trading_enabled(),
             "credentials_ok": config.t212_credentials_ok(),
             "t212_env": config.t212_env(),
+            "candle_model": config.candle_model_enabled(),
+            "candle_stake_gbp": config.candle_stake_gbp(),
+            "candle_entry_gap_pct": config.candle_entry_gap_pct(),
             "scanner_recent_count": self._scan_count,
             "scored": self._score_count,
             "last_event_age_s": (time.time() - self._last_event_ts) if self._last_event_ts else None,
             "queue_size": len(self.mgr.state.queue),
+            "candle_setups_active": len(db.candle_setup_list_active()) if config.candle_model_enabled() else 0,
         }
 
     def scanner_recent(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -166,6 +172,9 @@ class Engine:
         for task in list(self._monitor_tasks.values()):
             task.cancel()
         self._monitor_tasks.clear()
+        for task in list(self._candle_tasks.values()):
+            task.cancel()
+        self._candle_tasks.clear()
 
     # ── main loop ────────────────────────────────────────────────────────
     async def run(self) -> None:
@@ -213,7 +222,10 @@ class Engine:
         else:
             _log.warning("positions cache empty after startup wait — resume deferred to reconciler")
 
-        asyncio.create_task(self._grader_backfill_loop(), name="ai-grader-backfill")
+        if config.candle_model_enabled():
+            self._resume_candle_setups()
+        else:
+            asyncio.create_task(self._grader_backfill_loop(), name="ai-grader-backfill")
 
         async def _scanner_tail():
             async for msg in scanner_feed.tail(interval=1.0, start_at_end=True):
@@ -1225,6 +1237,15 @@ class Engine:
             recent_entry["disqualify_reason"] = f"paused:{why}"
             return
 
+        if config.candle_model_enabled() and alert.get("source") != "news_tester":
+            await self._run_candle_alert_path(
+                ticker=ticker or "?",
+                alert=alert,
+                alert_id=alert_id,
+                recent_entry=recent_entry,
+            )
+            return
+
         decision = await grader_processor.process_scanner_alert(
             ticker=ticker or "?",
             alert=alert,
@@ -1269,6 +1290,99 @@ class Engine:
                 )
             except Exception:
                 _log.exception("watch_episode_ensure_open failed for %s", ticker)
+
+    def _spawn_candle_task(self, setup_id: int) -> None:
+        sid = int(setup_id)
+        if sid in self._candle_tasks:
+            return
+
+        async def _runner() -> None:
+            try:
+                await candle_monitor.run_setup(sid, self.mgr, trade_lock=self._trade_lock)
+            finally:
+                self._candle_tasks.pop(sid, None)
+
+        self._candle_tasks[sid] = asyncio.create_task(_runner(), name=f"candle-setup-{sid}")
+
+    def _resume_candle_setups(self) -> None:
+        try:
+            rows = db.candle_setup_list_active()
+        except Exception:
+            _log.exception("candle setup resume list failed")
+            return
+        for row in rows:
+            self._spawn_candle_task(int(row["id"]))
+        if rows:
+            _log.info("resumed %d active candle setup(s)", len(rows))
+
+    async def _run_candle_alert_path(
+        self,
+        *,
+        ticker: str,
+        alert: dict[str, Any],
+        alert_id: int,
+        recent_entry: dict[str, Any],
+    ) -> None:
+        import json as _json
+
+        from . import candle_model as _cm
+
+        tk = (ticker or "").strip().upper()
+        if not tk or tk == "?":
+            return
+
+        alert_price = float(alert.get("price") or 0)
+        if alert_price <= 0:
+            recent_entry["active_label"] = "SKIP"
+            recent_entry["defer_reason"] = "no_alert_price"
+            _log.info("candle skip %s — no alert price", tk)
+            return
+
+        if db.candle_setup_active_for_ticker(tk):
+            recent_entry["active_label"] = "WATCHING"
+            recent_entry["defer_reason"] = "candle_setup_active"
+            return
+
+        for s in self.mgr.state.slots:
+            if s.state in ("ACTIVE", "SELL_PENDING") and s.ticker:
+                disp = t212_ai.display_raw_for(s.ticker) or s.ticker
+                if disp.upper().split("_")[0] == tk.split("_")[0]:
+                    recent_entry["defer_reason"] = "slot_active"
+                    return
+
+        if t212_ai.instrument_map_ready() and t212_ai.resolve_ticker(tk) is None:
+            recent_entry["defer_reason"] = "not_on_t212"
+            return
+
+        bl = db.t212_blacklist_get(tk)
+        if bl:
+            recent_entry["active_label"] = "FILTERED"
+            recent_entry["defer_reason"] = f"blacklist:{bl.get('reason')}"
+            return
+
+        trade = _cm.CandleTradeState.waiting(alert_price, gap_pct=config.candle_entry_gap_pct())
+        ysym = price_data.yahoo_symbol(tk)
+        setup_id = db.candle_setup_create(
+            alert_id=alert_id,
+            ticker=tk,
+            yahoo_symbol=ysym,
+            alert_price=alert_price,
+            alert_ts=float(recent_entry.get("ts") or time.time()),
+            levels_json=_json.dumps(trade.levels.to_dict()),
+        )
+        recent_entry["active_label"] = "WAITING ENTRY"
+        recent_entry["candle_setup_id"] = setup_id
+        recent_entry["entry_trigger"] = trade.levels.entry_trigger
+        recent_entry["decision"] = "CANDLE_WAIT"
+        _log.info(
+            "candle setup #%s %s A=%.4f trigger=%.4f (+%.1f%%)",
+            setup_id,
+            tk,
+            alert_price,
+            trade.levels.entry_trigger,
+            config.candle_entry_gap_pct(),
+        )
+        self._spawn_candle_task(setup_id)
 
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         if not config.trading_enabled():

@@ -231,6 +231,26 @@ CREATE TABLE IF NOT EXISTS news_web_search_ticker_cool (
   ticker TEXT PRIMARY KEY,
   last_ok_ts REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS candle_setups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER,
+  ticker TEXT NOT NULL,
+  yahoo_symbol TEXT,
+  alert_price REAL NOT NULL,
+  alert_ts REAL NOT NULL,
+  state TEXT NOT NULL DEFAULT 'waiting_for_entry',
+  entry_price REAL,
+  entry_ts REAL,
+  trade_id INTEGER,
+  highest_runner_close REAL,
+  last_candle_ts REAL,
+  outcome TEXT,
+  levels_json TEXT,
+  created_ts REAL NOT NULL,
+  updated_ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_candle_setups_active ON candle_setups(state, ticker);
 """
 
 _TRADE_EXTRA_COLS: tuple[tuple[str, str], ...] = (
@@ -2091,6 +2111,70 @@ def trade_audit_note_external_close(
     )
 
 
+def candle_setup_create(
+    *,
+    alert_id: int | None,
+    ticker: str,
+    yahoo_symbol: str,
+    alert_price: float,
+    alert_ts: float,
+    levels_json: str,
+) -> int:
+    now = time.time()
+    return insert(
+        """INSERT INTO candle_setups(
+               alert_id, ticker, yahoo_symbol, alert_price, alert_ts,
+               state, levels_json, created_ts, updated_ts)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            alert_id,
+            ticker.upper(),
+            yahoo_symbol,
+            float(alert_price),
+            float(alert_ts),
+            "waiting_for_entry",
+            levels_json,
+            now,
+            now,
+        ),
+    )
+
+
+def candle_setup_update(setup_id: int, **fields: Any) -> None:
+    if not fields:
+        return
+    fields["updated_ts"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in fields)
+    execute(
+        f"UPDATE candle_setups SET {cols} WHERE id=?",
+        (*fields.values(), int(setup_id)),
+    )
+
+
+def candle_setup_get(setup_id: int) -> dict[str, Any] | None:
+    row = fetchone("SELECT * FROM candle_setups WHERE id=?", (int(setup_id),))
+    return dict(row) if row else None
+
+
+def candle_setup_active_for_ticker(ticker: str) -> dict[str, Any] | None:
+    row = fetchone(
+        """SELECT * FROM candle_setups
+            WHERE UPPER(ticker)=? AND state NOT IN ('closed', 'not_filled')
+            ORDER BY id DESC LIMIT 1""",
+        (ticker.upper(),),
+    )
+    return dict(row) if row else None
+
+
+def candle_setup_list_active() -> list[dict[str, Any]]:
+    rows = fetchall(
+        """SELECT * FROM candle_setups
+            WHERE state NOT IN ('closed', 'not_filled')
+            ORDER BY id ASC"""
+    )
+    return [dict(r) for r in rows]
+
+
 def wipe_all_tables() -> None:
     """Delete all AI sandbox rows (SQLite). Safe to call while idle; restart the engine after.
 
@@ -2113,6 +2197,7 @@ def wipe_all_tables() -> None:
         "ai_decisions",
         "news_web_search_quota",
         "news_web_search_ticker_cool",
+        "candle_setups",
     )
     with _lock:
         c = _connect()
