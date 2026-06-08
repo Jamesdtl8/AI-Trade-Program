@@ -56,16 +56,16 @@ def record_from_response(
     call_kind: str,
     model: str,
     extra: dict[str, Any] | None = None,
-) -> None:
-    """Persist one call row when the API returns usage metadata."""
+) -> float:
+    """Persist one call row when the API returns usage metadata; return GBP cost."""
     try:
         db.init()
     except Exception:
         pass
     pt, ct, tt = extract_token_counts(resp)
-    if pt == 0 and ct == 0 and tt == 0:
-        return
     cost = gbp_cost_for_tokens(model, pt, ct)
+    if pt == 0 and ct == 0 and tt == 0 and cost <= 0:
+        return 0.0
     try:
         db.gemini_usage_insert(
             source=source,
@@ -79,6 +79,7 @@ def record_from_response(
         )
     except Exception:
         _log.debug("gemini_usage_insert failed", exc_info=True)
+    return cost
 
 
 def stats_since(ts: float) -> dict[str, Any]:

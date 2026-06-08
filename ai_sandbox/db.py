@@ -668,7 +668,7 @@ def ai_decision_insert(
             entry_price,
             target_price,
             int(latency_ms),
-            round(float(cost_gbp), 6),
+            round(float(cost_gbp or 0.0), 6),
             time.time(),
         ),
     )
