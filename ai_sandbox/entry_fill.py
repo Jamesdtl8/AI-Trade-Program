@@ -60,22 +60,66 @@ async def _check_position_for_fill(
     return None
 
 
+async def recover_position_fill(
+    t212_ticker: str,
+    *,
+    min_qty: float = 0.0,
+    requested_qty: float = 0.0,
+) -> tuple[float | None, float | None]:
+    """Return broker long qty + average entry when a position exists (post-timeout recovery)."""
+    threshold = float(config.FILL_PARTIAL_THRESHOLD)
+    requested = float(requested_qty)
+    min_q = float(min_qty)
+    if requested > 0:
+        hit = await _check_position_for_fill(t212_ticker, requested, threshold)
+        if hit is not None:
+            return hit
+    try:
+        positions = await t212_ai.get_positions(bypass_cache=True)
+        for pos in positions:
+            if pos.get("ticker") != t212_ticker:
+                continue
+            qty = float(pos.get("quantity") or 0)
+            avg_price = to_float(pos.get("averagePrice"))
+            if qty >= min_q > 0 or (min_q <= 0 and qty > 0):
+                _log.info(
+                    "AI fill recovered via positions: %s qty=%.4f @ ~%s",
+                    t212_ticker,
+                    qty,
+                    avg_price,
+                )
+                return qty, avg_price
+    except Exception as exc:
+        _log.warning("AI recover_position_fill %s failed: %s", t212_ticker, exc)
+    return None, None
+
+
 async def wait_market_fill(
     t212_ticker: str, requested_qty: float, *, timeout_sec: float | None = None
 ) -> tuple[float | None, float | None]:
-    """Confirm a market-entry fill via the positions snapshot (best-effort average price)."""
+    """Confirm a market-entry fill via the positions snapshot (1s poll)."""
     timeout = float(timeout_sec if timeout_sec is not None else config.FILL_WAIT_TIMEOUT_SECONDS)
     deadline = time.time() + timeout
-    await asyncio.sleep(1.2)
     threshold = float(config.FILL_PARTIAL_THRESHOLD)
     requested = float(requested_qty)
+    ver = t212_ai.positions_version()
     while time.time() < deadline:
         pos_hit = await _check_position_for_fill(t212_ticker, requested, threshold)
         if pos_hit is not None:
             q, avg = pos_hit
             return q, avg
-        await asyncio.sleep(2.0)
-    return None, None
+        remain = deadline - time.time()
+        if remain <= 0:
+            break
+        await t212_ai.wait_positions_update(
+            since_version=ver,
+            timeout=min(1.0, remain),
+        )
+        ver = t212_ai.positions_version()
+    min_q = t212_ai.minimum_buy_quantity(t212_ticker)
+    return await recover_position_fill(
+        t212_ticker, min_qty=min_q, requested_qty=requested
+    )
 
 
 async def wait_limit_fill(

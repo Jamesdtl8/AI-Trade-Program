@@ -445,6 +445,11 @@ POT_TOTAL_GBP: float = sum(POT_CAPITALS_GBP)  # 14 000
 SLOT_CAPITAL_GBP = POT_CAPITALS_GBP[0]  # fallback (primary-pot size) when T212 cash unavailable
 
 
+def massive_ws_enabled() -> bool:
+    """Open a Massive.com websocket from this app (off by default — Trading Platform owns the feed)."""
+    return _env("AI_MASSIVE_WS", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def candle_model_enabled() -> bool:
     """Use 1m candle-close confirmation model instead of the AI grader execution path."""
     return _env("AI_CANDLE_MODEL", "1").strip().lower() in ("1", "true", "yes")
@@ -476,13 +481,199 @@ def candle_stake_gbp() -> float:
 
 
 def candle_poll_seconds() -> float:
-    """How often to poll yfinance 1m candles for active setups."""
-    raw = (_env("AI_CANDLE_POLL_SECONDS", "15")).strip()
+    """How often to poll broker ticks for active candle setups (default 1s)."""
+    raw = (_env("AI_CANDLE_POLL_SECONDS", "1")).strip()
     try:
         v = float(raw)
-        return max(5.0, min(60.0, v))
+        return max(0.5, min(60.0, v))
+    except ValueError:
+        return 1.0
+
+
+def candle_stop_loss_pct() -> float:
+    """Normal stop: 1m candle close at this loss % from entry (default 10%)."""
+    raw = (_env("AI_CANDLE_STOP_LOSS_PCT", "10")).strip()
+    try:
+        return max(1.0, min(25.0, float(raw)))
+    except ValueError:
+        return 10.0
+
+
+def candle_emergency_stop_pct() -> float:
+    """Instant 1s-tick market sell if unrealised loss reaches this % (default 18%)."""
+    raw = (_env("AI_CANDLE_EMERGENCY_STOP_PCT", "18")).strip()
+    try:
+        return max(5.0, min(50.0, float(raw)))
+    except ValueError:
+        return 18.0
+
+
+def candle_initial_stop_price(entry: float) -> float:
+    """Stop price = entry × (1 − stop_loss_pct/100)."""
+    e = float(entry)
+    if e <= 0:
+        return 0.0
+    return round(e * (1.0 - candle_stop_loss_pct() / 100.0), 6)
+
+
+def candle_stop_bar_seconds() -> float:
+    """Stop-loss uses completed 1m candle closes (fixed 60s; not configurable below 60)."""
+    raw = (_env("AI_CANDLE_STOP_BAR_SEC", "60")).strip()
+    try:
+        return max(60.0, min(120.0, float(raw)))
+    except ValueError:
+        return 60.0
+
+
+def candle_profit_on_tick_enabled() -> bool:
+    """Arm ratchet and take profit on each 1s broker tick (default on)."""
+    return _env("AI_CANDLE_PROFIT_ON_TICK", "1").strip().lower() in ("1", "true", "yes")
+
+
+def candle_profit_bar_seconds() -> float:
+    """Profit / trail bar width from T212 ticks (default 15s, uses avg)."""
+    raw = (_env("AI_CANDLE_PROFIT_BAR_SEC", "15")).strip()
+    try:
+        return max(5.0, min(60.0, float(raw)))
     except ValueError:
         return 15.0
+
+
+def candle_use_tick_bars() -> bool:
+    """Use broker tick bars instead of Yahoo 1m candles for exits."""
+    return _env("AI_CANDLE_TICK_BARS", "1").strip().lower() in ("1", "true", "yes")
+
+
+def candle_loss_filters_enabled() -> bool:
+    """Loss-analysis entry filters (known runner + no news block)."""
+    return _env("AI_CANDLE_LOSS_FILTERS", "1").strip().lower() in ("1", "true", "yes")
+
+
+def candle_scratch_90s_enabled() -> bool:
+    """90s momentum scratch for dead early-episode trades."""
+    return _env("AI_CANDLE_SCRATCH_90S", "1").strip().lower() in ("1", "true", "yes")
+
+
+def candle_scratch_peak_pct() -> float:
+    raw = (_env("AI_CANDLE_SCRATCH_PEAK_PCT", "3")).strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 3.0
+
+
+def candle_scratch_green_pct() -> float:
+    raw = (_env("AI_CANDLE_SCRATCH_GREEN_PCT", "0.5")).strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.5
+
+
+def candle_scratch_max_alert() -> int:
+    raw = (_env("AI_CANDLE_SCRATCH_MAX_ALERT", "4")).strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 4
+
+
+def candle_ticker_loss_cooldown_minutes() -> float:
+    """Block new entries on a ticker for this many minutes after a losing close."""
+    raw = (_env("AI_CANDLE_TICKER_LOSS_COOLDOWN_MIN", "60")).strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 60.0
+
+
+def candle_ticker_any_exit_cooldown_minutes() -> float:
+    """Block re-entry for N minutes after any close (win or loss) on the same ticker."""
+    raw = (_env("AI_CANDLE_TICKER_ANY_EXIT_COOLDOWN_MIN", "30")).strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 30.0
+
+
+def candle_max_trades_per_ticker_day() -> int:
+    """Max closed trades per scanner ticker per UK day (default 1 — reduced from 2 on 2026-06-16).
+    Multiple re-entries on the same ticker compound losses. One shot per ticker per day."""
+    raw = (_env("AI_CANDLE_MAX_TRADES_PER_TICKER_DAY", "1")).strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1
+
+
+
+
+def candle_max_entry_chase_pct() -> float:
+    """Skip market buy if live quote exceeds alert price by more than this % (0 = off)."""
+    raw = (_env("AI_CANDLE_MAX_ENTRY_CHASE_PCT", "8")).strip()
+    try:
+        return max(0.0, min(50.0, float(raw)))
+    except ValueError:
+        return 8.0
+
+
+def candle_squeeze_reentry_min_alert() -> int:
+    """After a stop-loss on a squeeze setup, require at least this alert # to re-enter."""
+    raw = (_env("AI_CANDLE_SQUEEZE_REENTRY_MIN_ALERT", "6")).strip()
+    try:
+        return max(2, int(raw))
+    except ValueError:
+        return 6
+
+
+def candle_intrabar_exit_enabled() -> bool:
+    """Legacy alias — ramp-only intrabar (stop is always 30s bar)."""
+    return candle_intrabar_ramp_exit_enabled()
+
+
+def candle_intrabar_ramp_exit_enabled() -> bool:
+    """Tick-level ramp floor exit when price breaches ratchet floor (default on)."""
+    return _env("AI_CANDLE_INTRABAR_RAMP", "1").strip().lower() in ("1", "true", "yes")
+
+
+def candle_stale_quote_seconds() -> float:
+    """Identical broker quotes for this long → treat as halt risk and flatten."""
+    raw = (_env("AI_CANDLE_STALE_QUOTE_SEC", "90")).strip()
+    try:
+        return max(30.0, float(raw))
+    except ValueError:
+        return 90.0
+
+
+def candle_sell_watchdog_seconds() -> float:
+    """Re-submit market sell if SELL_PENDING with open broker qty exceeds this."""
+    raw = (_env("AI_CANDLE_SELL_WATCHDOG_SEC", "30")).strip()
+    try:
+        return max(10.0, float(raw))
+    except ValueError:
+        return 30.0
+
+
+def candle_squeeze_dead_scratch_enabled() -> bool:
+    """90s scratch dead squeezes that never went green (peak below threshold)."""
+    return _env("AI_CANDLE_SQUEEZE_DEAD_SCRATCH", "1").strip().lower() in ("1", "true", "yes")
+
+
+def candle_squeeze_dead_scratch_peak_pct() -> float:
+    raw = (_env("AI_CANDLE_SQUEEZE_DEAD_SCRATCH_PEAK_PCT", "1")).strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 1.0
+
+
+def entry_ai_enabled() -> bool:
+    """Run Gemini §3.1 entry prompt (rules remain authoritative on hard rejects)."""
+    return _env("AI_ENTRY_AI_VALIDATE", "1").strip().lower() in ("1", "true", "yes")
+
+
+def entry_ai_model() -> str:
+    return _env("AI_ENTRY_AI_MODEL") or gemini_model_scorer()
 
 
 def us_after_hours_complete() -> bool:
@@ -660,7 +851,7 @@ def fill_partial_threshold() -> float:
 
 FILL_WAIT_TIMEOUT_SECONDS = fill_wait_timeout_seconds()
 FILL_PARTIAL_THRESHOLD = fill_partial_threshold()
-POSITION_RECONCILE_FAST_S = 5
+POSITION_RECONCILE_FAST_S = 1
 POSITION_RECONCILE_SLOW_S = 30
 # Ignore transient "broker flat" right after a fill (positions API lag).
 OPEN_RECONCILE_GRACE_SECONDS = 90

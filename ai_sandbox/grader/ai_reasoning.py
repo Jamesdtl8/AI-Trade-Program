@@ -304,10 +304,67 @@ def build_narrative_summary(output: dict[str, Any]) -> str:
     return clamp_summary_text(" ".join(sentences))
 
 
+def _explain_entry_grader(output: dict[str, Any]) -> str:
+    """Plain-English summary for candle-model entry grader (§3.1) rows."""
+    parsed = output.get("parsed") if isinstance(output.get("parsed"), dict) else {}
+    final = str(
+        output.get("final_decision")
+        or parsed.get("decision")
+        or output.get("grade")
+        or "SKIP"
+    ).upper()
+    rules = str(output.get("rules_decision") or "").upper()
+    setup = str(parsed.get("matched_setup") or "").strip()
+    reject = str(parsed.get("reject_reason") or "").strip()
+    response = str(output.get("response") or "").strip()
+
+    if final == "TRADE_NOW":
+        parts = ["Taking the trade — rules approved entry."]
+        if setup and setup.lower() not in ("none", "n/a", "-"):
+            parts.append(f"Setup: {setup}.")
+        if rules == "WATCH_ONLY":
+            parts.append("Rules were WATCH only; AI upgraded to TRADE_NOW.")
+        elif rules == "SKIP":
+            parts.append("Rules were SKIP; AI overrode to TRADE_NOW.")
+    elif final == "WATCH_ONLY":
+        parts = ["Watching only — not entering yet."]
+        if rules == "TRADE_NOW":
+            parts.append("Rules said TRADE_NOW; AI downgraded to watch.")
+        if reject:
+            parts.append(f"Reason: {humanize(reject)}.")
+    else:
+        parts = ["Passing on this setup."]
+        if reject:
+            parts.append(f"Reason: {humanize(reject)}.")
+        elif rules and rules != "SKIP":
+            parts.append(f"Rules were {rules}; AI confirmed skip.")
+
+    # Pull a short excerpt from the model response (after the Decision line).
+    excerpt = ""
+    if response:
+        lines = [ln.strip() for ln in response.splitlines() if ln.strip()]
+        body_lines = [
+            ln
+            for ln in lines
+            if not re.match(r"^Decision:\s*", ln, re.I)
+            and not re.match(r"^Matched setup:\s*", ln, re.I)
+            and not re.match(r"^Reject reason:\s*", ln, re.I)
+        ]
+        if body_lines:
+            excerpt = clamp_summary_text(" ".join(body_lines[:4]))
+    if excerpt and excerpt not in " ".join(parts):
+        parts.append(excerpt)
+
+    return clamp_summary_text(" ".join(parts))
+
+
 def finalize_reasoning(output: dict[str, Any] | None) -> str:
     """Prefer GPT-written summary; otherwise build a readable narrative."""
     if not output:
         return "No AI decision recorded."
+
+    if str(output.get("source") or "") == "entry_grader":
+        return _explain_entry_grader(output)
 
     ctx = output.get("context") if isinstance(output.get("context"), dict) else {}
     gates = ctx.get("gates") if isinstance(ctx.get("gates"), dict) else {}

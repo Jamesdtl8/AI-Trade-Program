@@ -95,6 +95,16 @@ def _direct_quote(symbol: str) -> dict[str, Any]:
 
 def quote(symbol: str) -> dict[str, Any]:
     """Return current price + previous close for ``symbol``."""
+    try:
+        from . import massive_bridge
+
+        if massive_bridge.enabled():
+            sym = massive_bridge.scanner_symbol(symbol)
+            px = massive_bridge.live_price(sym)
+            if px and px > 0:
+                return {"symbol": sym, "p": px, "price": px, "source": "massive"}
+    except Exception:
+        pass
     q = _shared_quote(symbol)
     if q and (q.get("p") is not None or q.get("price") is not None):
         return q
@@ -179,14 +189,99 @@ def candles_1m(symbol: str, count: int = 20) -> list[dict[str, Any]]:
     return out
 
 
-def candles_1m_after(symbol: str, since_ts: float, *, count: int = 120) -> list[dict[str, Any]]:
+_t212_buckets: dict[str, dict[str, Any]] = {}
+_t212_bar_history: dict[str, list[dict[str, Any]]] = {}
+_T212_HISTORY_MAX = 240
+
+
+def record_t212_price(symbol: str, price: float, ts: float | None = None) -> dict[str, Any] | None:
+    """Bucket T212 ticks into synthetic 1m closes; return completed bar on minute roll."""
+    sym = yahoo_symbol(symbol) or symbol
+    px = float(price)
+    if px <= 0:
+        return None
+    now = float(ts if ts is not None else time.time())
+    minute = int(now // 60) * 60
+    state = _t212_buckets.get(sym)
+    if state is None:
+        _t212_buckets[sym] = {"minute": minute, "close": px}
+        return None
+    if minute > int(state["minute"]):
+        completed_ts = float(state["minute"]) + 60.0
+        bar = {
+            "t": "",
+            "ts": completed_ts,
+            "o": float(state["close"]),
+            "h": float(state["close"]),
+            "l": float(state["close"]),
+            "c": float(state["close"]),
+            "v": 0,
+            "source": "t212",
+        }
+        hist = _t212_bar_history.setdefault(sym, [])
+        hist.append(bar)
+        if len(hist) > _T212_HISTORY_MAX:
+            del hist[: len(hist) - _T212_HISTORY_MAX]
+        state["minute"] = minute
+        state["close"] = px
+        return bar
+    state["close"] = px
+    return None
+
+
+def t212_synthetic_bars(symbol: str, *, count: int = 120) -> list[dict[str, Any]]:
+    sym = yahoo_symbol(symbol) or symbol
+    return list(_t212_bar_history.get(sym, [])[-count:])
+
+
+def candles_1m_after(
+    symbol: str,
+    since_ts: float,
+    *,
+    count: int = 120,
+    t212_price: float | None = None,
+) -> list[dict[str, Any]]:
     """1m candles with bar close timestamp strictly after ``since_ts``."""
+    try:
+        from . import massive_bridge
+
+        if massive_bridge.enabled():
+            bar = massive_bridge.last_closed_1m_bar(symbol)
+            if bar:
+                end_ms = int(bar.get("e") or 0)
+                ts = end_ms / 1000.0 if end_ms > 0 else 0.0
+                if ts > float(since_ts):
+                    return [
+                        {
+                            "ts": ts,
+                            "c": float(bar.get("c") or 0),
+                            "o": bar.get("o"),
+                            "h": bar.get("h"),
+                            "l": bar.get("l"),
+                            "source": "massive_am",
+                        }
+                    ]
+    except Exception:
+        pass
+    if t212_price is not None and float(t212_price) > 0:
+        record_t212_price(symbol, float(t212_price))
     bars = candles_1m(symbol, count=count)
+    if not bars:
+        bars = t212_synthetic_bars(symbol, count=count)
     return [b for b in bars if float(b.get("ts") or 0) > float(since_ts)]
 
 
 def last_price(symbol: str) -> float | None:
-    """Best-effort spot from Yahoo (same pipeline as dashboard)."""
+    """Best-effort spot — Massive websocket when enabled, else Yahoo."""
+    try:
+        from . import massive_bridge
+
+        if massive_bridge.enabled():
+            px = massive_bridge.live_price(symbol)
+            if px and px > 0:
+                return float(px)
+    except Exception:
+        pass
     q = quote(symbol)
     if not isinstance(q, dict):
         return None

@@ -38,6 +38,15 @@ _POSITIONS_LOCK = asyncio.Lock()
 _POSITIONS_CACHE: list[dict[str, Any]] | None = None
 _POSITIONS_CACHE_MONO: float = 0.0
 
+# Tickers with an in-flight market buy — forces 1s position polling until cleared.
+_PENDING_ENTRIES: dict[str, float] = {}  # t212_code -> registered mono
+
+# Event loop + wake signals for instant fill / reconcile on each positions snapshot.
+_positions_loop: asyncio.AbstractEventLoop | None = None
+_positions_updated: asyncio.Event | None = None
+_wake_poller: asyncio.Event | None = None
+_positions_version: int = 0
+
 # Shared account summary from ``run_account_summary_poller`` (GBP cash + totals).
 _ACCOUNT_LOCK = asyncio.Lock()
 _ACCOUNT_CACHE: dict[str, Any] | None = None
@@ -998,20 +1007,96 @@ async def cancel_pending_open_order(order_id: str | int | None) -> bool:
         return False
 
 
+def _bind_positions_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _positions_loop, _positions_updated, _wake_poller
+    _positions_loop = loop
+    _positions_updated = asyncio.Event()
+    _wake_poller = asyncio.Event()
+
+
+def _wake_positions_poller() -> None:
+    """Request an immediate GET /equity/positions (e.g. right after place_market)."""
+    ev = _wake_poller
+    loop = _positions_loop
+    if ev is None or loop is None or not loop.is_running():
+        return
+    try:
+        loop.call_soon_threadsafe(ev.set)
+    except RuntimeError:
+        pass
+
+
+def _notify_positions_cache_updated() -> None:
+    global _positions_version
+    _positions_version += 1
+    ev = _positions_updated
+    loop = _positions_loop
+    if ev is None or loop is None or not loop.is_running():
+        return
+    try:
+        loop.call_soon_threadsafe(ev.set)
+    except RuntimeError:
+        pass
+
+
+def positions_version() -> int:
+    return int(_positions_version)
+
+
+async def wait_positions_update(*, since_version: int, timeout: float) -> bool:
+    """Return True when the shared positions snapshot advanced past *since_version*."""
+    if positions_version() > since_version:
+        return True
+    ev = _positions_updated
+    if ev is None:
+        await asyncio.sleep(min(max(0.05, float(timeout)), 1.0))
+        return positions_version() > since_version
+    ev.clear()
+    try:
+        await asyncio.wait_for(ev.wait(), timeout=max(0.05, float(timeout)))
+    except asyncio.TimeoutError:
+        return positions_version() > since_version
+    return positions_version() > since_version
+
+
+def register_pending_entry(t212_code: str) -> None:
+    """Mark a ticker as awaiting broker fill — triggers immediate positions poll."""
+    tk = (t212_code or "").strip().upper()
+    if tk:
+        _PENDING_ENTRIES[tk] = time.monotonic()
+        _wake_positions_poller()
+
+
+def clear_pending_entry(t212_code: str) -> None:
+    tk = (t212_code or "").strip().upper()
+    if tk:
+        _PENDING_ENTRIES.pop(tk, None)
+
+
+def has_pending_entries() -> bool:
+    return bool(_PENDING_ENTRIES)
+
+
+def pending_entry_tickers() -> list[str]:
+    return sorted(_PENDING_ENTRIES.keys())
+
+
 async def run_positions_poller() -> None:
     """Background loop: the **only** HTTP caller for ``GET /equity/positions`` on the AI account.
 
     All monitors, Flask bridges, reconcilers, and fills read the shared snapshot via
     :func:`get_positions` (never performs HTTP).
 
-    Poll rate adapts to market phase and open-position count:
-      - Open positions present          → 1s (full rate, need live tracking)
-      - No positions, market active     → 10s (light check for orphan reconcile)
-      - No positions, market closed     → 60s (maintain stale cache, burn no budget)
+    Poll rate:
+      - US regular or extended hours  → 1s (always — fills and orphans must be instant)
+      - Pending entry (buy in flight) → 1s
+      - Open / sell-pending trades    → 1s
+      - Market closed and flat        → 60s
     """
     from . import db as _db
 
     _log.info("AI T212 positions poller started (single producer for /equity/positions)")
+    _bind_positions_loop(asyncio.get_running_loop())
     _consecutive_429s = 0
     while True:
         if not config.t212_credentials_ok():
@@ -1021,27 +1106,31 @@ async def run_positions_poller() -> None:
             await asyncio.sleep(5.0)
             continue
 
-        # Adaptive sleep before next poll
         phase = config.market_phase()
-        market_live = phase in ("pre", "regular", "after")
+        market_active = phase in ("regular", "extended")
         has_open = bool(
             _db.fetchone(
                 "SELECT 1 FROM trades WHERE status IN ('OPEN','SELL_PENDING') LIMIT 1"
             )
         )
-        if has_open:
-            inter_poll_s = 1.0          # live position — full rate
-        elif market_live:
-            inter_poll_s = 10.0         # market open but flat — light check
+        if has_open or has_pending_entries() or market_active:
+            inter_poll_s = 1.0
         else:
-            inter_poll_s = 60.0         # market closed and flat — minimal polling
+            inter_poll_s = 60.0
 
-        # Exponential backoff if we've been 429'd repeatedly
         if _consecutive_429s > 0:
             backoff = min(60.0, inter_poll_s * (2 ** _consecutive_429s))
             await asyncio.sleep(backoff)
         else:
-            await asyncio.sleep(inter_poll_s)
+            wake = _wake_poller
+            if wake is not None:
+                wake.clear()
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=inter_poll_s)
+                except asyncio.TimeoutError:
+                    pass
+            else:
+                await asyncio.sleep(inter_poll_s)
 
         try:
             res = await request("GET", "/equity/positions")
@@ -1050,6 +1139,7 @@ async def run_positions_poller() -> None:
                 global _POSITIONS_CACHE, _POSITIONS_CACHE_MONO
                 _POSITIONS_CACHE = parsed
                 _POSITIONS_CACHE_MONO = time.monotonic()
+            _notify_positions_cache_updated()
             _consecutive_429s = 0  # reset on success
         except (T212AIError, Exception) as exc:
             if not isinstance(exc, T212AIError):

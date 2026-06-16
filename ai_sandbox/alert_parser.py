@@ -23,6 +23,9 @@ _PRICE_RE = re.compile(r"`?\$([0-9]+(?:\.[0-9]+)?)`?")
 _FT_RE = re.compile(r"\*\*FT\*\*\s+([0-9.]+)\s*([KMB]?)", re.IGNORECASE)
 _MC_RE = re.compile(r"\*\*MC\*\*\s+([0-9.]+)\s*([KMB]?)", re.IGNORECASE)
 _RV_RE = re.compile(r"\*\*RV\*\*\s+([0-9.]+)x", re.IGNORECASE)
+_1V_RE = re.compile(r"(?:\*\*1V\*\*|(?:^|[·•|])\s*1V)\s+([0-9.]+)\s*([KMB]?)", re.IGNORECASE)
+_RS_RE = re.compile(r"R/S\s*[•\-:]\s*1:(\d+)", re.IGNORECASE)
+_IPO_RE = re.compile(r"\bIPO\b", re.IGNORECASE)
 _RANK_RE = re.compile(r"`#(\d+)`")
 _HALT_RE = re.compile(r"HALTED", re.IGNORECASE)
 _OFFERING_RE = re.compile(r"OFFERING", re.IGNORECASE)
@@ -107,6 +110,17 @@ def parse(content: str) -> dict[str, Any]:
         except ValueError:
             pass
 
+    vol1 = _1V_RE.search(content)
+    if vol1:
+        out["volume_1v"] = _parse_amount(vol1.group(1), vol1.group(2))
+
+    rs = _RS_RE.search(content)
+    if rs:
+        out["reverse_split"] = f"1:{rs.group(1)}"
+
+    if _IPO_RE.search(content):
+        out["ipo"] = True
+
     rank = _RANK_RE.search(content)
     if rank:
         try:
@@ -179,6 +193,10 @@ def _scanner_label(content: str) -> str | None:
         return "BREAKOUT"
     if upper.startswith("NBREAK"):
         return "NBREAK"
+    if upper.startswith("HUGE S"):
+        return "HUGE S"
+    if upper.startswith("HUGE"):
+        return "HUGE"
     if upper.startswith("REV"):
         return "REV V"
     if upper.startswith("BTT"):

@@ -19,6 +19,8 @@ from . import (
     db,
     discord_notifier,
     entry_fill,
+    entry_rules,
+    massive_bridge,
     news_scanner_feed,
     news_scanner_parser,
     news_classify,
@@ -154,6 +156,7 @@ class Engine:
             "last_event_age_s": (time.time() - self._last_event_ts) if self._last_event_ts else None,
             "queue_size": len(self.mgr.state.queue),
             "candle_setups_active": len(db.candle_setup_list_active()) if config.candle_model_enabled() else 0,
+            "massive": massive_bridge.stream_status(),
         }
 
     def scanner_recent(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -182,11 +185,13 @@ class Engine:
         try:
             n_ticks = db.monitor_log_backfill_all_exit_ticks()
             n_audit = db.repair_unfinalized_trade_audits()
-            if n_ticks or n_audit:
+            n_candle = db.backfill_candle_decision_history_from_scores()
+            if n_ticks or n_audit or n_candle:
                 _log.info(
-                    "startup backfill: exit_ticks=%d trade_audits_repaired=%d",
+                    "startup backfill: exit_ticks=%d trade_audits_repaired=%d candle_history=%d",
                     n_ticks,
                     n_audit,
+                    n_candle,
                 )
         except Exception:
             _log.exception("startup monitor/audit backfill failed")
@@ -209,6 +214,8 @@ class Engine:
                 _log.info("AI sandbox ticker map skipped (AI_TRADING_ENABLED=0)")
         except Exception:
             _log.exception("initial ticker map build failed (will retry on demand)")
+        if massive_bridge.start_streams():
+            asyncio.create_task(self._massive_symbol_sync_loop(), name="ai-massive-symbol-sync")
         asyncio.create_task(t212_ai.run_positions_poller(), name="ai-t212-positions-poller")
         asyncio.create_task(t212_ai.run_account_summary_poller(), name="ai-t212-account-poller")
         asyncio.create_task(self._ticker_map_refresher(), name="ai-ticker-map-refresh")
@@ -280,6 +287,33 @@ class Engine:
                 await t212_ai.refresh_ticker_map(force=False)
             except Exception:
                 _log.exception("ticker_map_refresher iteration failed")
+
+    async def _massive_symbol_sync_loop(self) -> None:
+        """Keep Massive WS subscribed to all open AI sandbox + candle-setup tickers."""
+        while True:
+            try:
+                if massive_bridge.enabled():
+                    syms: set[str] = set()
+                    for row in db.fetchall(
+                        "SELECT ticker FROM trades WHERE status IN ('OPEN','SELL_PENDING')"
+                    ):
+                        tk = massive_bridge.scanner_symbol(str(row["ticker"] or ""))
+                        if tk:
+                            syms.add(tk)
+                    for row in db.candle_setup_list_active():
+                        tk = massive_bridge.scanner_symbol(str(row.get("ticker") or ""))
+                        if tk:
+                            syms.add(tk)
+                    for s in self.mgr.state.slots:
+                        if s.ticker and s.state in ("ACTIVE", "SELL_PENDING"):
+                            tk = massive_bridge.scanner_symbol(str(s.ticker))
+                            if tk:
+                                syms.add(tk)
+                    massive_bridge.register_symbols(sorted(syms))
+                    await massive_bridge.refresh_subscriptions()
+            except Exception:
+                _log.debug("massive symbol sync failed", exc_info=True)
+            await asyncio.sleep(3.0)
 
     async def _stop_monitor_for_slot_ix(self, slot_ix: int) -> None:
         t = self._monitor_tasks.pop(slot_ix, None)
@@ -439,9 +473,12 @@ class Engine:
             "alert": alert_reload,
             "highest_price": peak_f,
         }
-        if "reconcile" in str(resume_reason or "").lower() or "reconciled" in str(
-            row.get("exit_reason") or ""
-        ):
+        if db.fetchone("SELECT 1 FROM candle_setups WHERE trade_id=? LIMIT 1", (tid,)):
+            setup["candle_model"] = True
+        # Candle-model trades use 1m stop / ramping trail — never apply orphan reconcile grace.
+        if not setup.get("candle_model") and "reconcile_orphan" in str(
+            resume_reason or ""
+        ).lower():
             setup["stop_grace_until"] = time.time() + float(config.RECONCILE_STOP_GRACE_SECONDS)
         await self.mgr.assign(
             slot_o,
@@ -543,6 +580,50 @@ class Engine:
         )
         return True
 
+    async def _try_adopt_pending_broker_fills(
+        self,
+        broker_by_tkr: dict[str, float],
+        broker_avgp: dict[str, float | None],
+    ) -> bool:
+        """On each positions snapshot: instantly link in-flight buys to candle setups."""
+        if not config.candle_model_enabled():
+            return False
+        adopted_any = False
+        for pt in t212_ai.pending_entry_tickers():
+            qty = float(broker_by_tkr.get(pt, 0.0))
+            if qty <= 1e-6:
+                continue
+            raw = pt.split("_")[0]
+            setup = db.candle_setup_awaiting_fill_for_ticker(raw) or db.candle_setup_recent_failed_for_ticker(
+                raw, within_sec=900.0
+            )
+            if not setup:
+                continue
+            levels_raw = json.loads(setup.get("levels_json") or "{}")
+            entry_meta = levels_raw.get("entry_meta")
+            alert_px = float(setup.get("alert_price") or 0)
+            adopted = await candle_monitor.adopt_broker_fill_for_setup(
+                setup_id=int(setup["id"]),
+                ticker=raw,
+                alert_price=alert_px,
+                alert_id=int(setup["alert_id"]) if setup.get("alert_id") else None,
+                mgr=self.mgr,
+                trade_lock=self._trade_lock,
+                entry_meta=entry_meta if isinstance(entry_meta, dict) else None,
+                qty_hint=qty,
+                entry_hint=broker_avgp.get(pt),
+            )
+            if adopted:
+                self._spawn_candle_task(int(setup["id"]))
+                _log.warning(
+                    "instant adopt %s setup #%s trade_id=%s (positions snapshot)",
+                    pt,
+                    setup["id"],
+                    adopted[0],
+                )
+                adopted_any = True
+        return adopted_any
+
     async def _capture_orphan_broker_position(
         self,
         *,
@@ -616,6 +697,33 @@ class Engine:
                 qty,
             )
             return False
+
+        raw_sym = tkr.split("_")[0]
+        failed_setup = db.candle_setup_recent_failed_for_ticker(raw_sym, within_sec=900.0)
+        if failed_setup and config.candle_model_enabled():
+            alert_px = float(failed_setup.get("alert_price") or 0)
+            levels_raw = json.loads(failed_setup.get("levels_json") or "{}")
+            entry_meta = levels_raw.get("entry_meta")
+            adopted = await candle_monitor.adopt_broker_fill_for_setup(
+                setup_id=int(failed_setup["id"]),
+                ticker=raw_sym,
+                alert_price=alert_px,
+                alert_id=int(failed_setup["alert_id"]) if failed_setup.get("alert_id") else None,
+                mgr=self.mgr,
+                trade_lock=self._trade_lock,
+                entry_meta=entry_meta if isinstance(entry_meta, dict) else None,
+                qty_hint=qty,
+                entry_hint=float(avg_price) if avg_price else None,
+            )
+            if adopted:
+                self._spawn_candle_task(int(failed_setup["id"]))
+                _log.warning(
+                    "AI RECONCILE linked orphan %s to candle setup #%s (trade_id=%s)",
+                    tkr,
+                    failed_setup["id"],
+                    adopted[0],
+                )
+                return True
 
         entry = float(avg_price) if avg_price is not None and avg_price > 0 else 0.0
         if entry <= 0:
@@ -887,6 +995,9 @@ class Engine:
                 async with self._trade_lock:
                     tracked_tickers: set[str] = set()
 
+                    if await self._try_adopt_pending_broker_fills(broker_by_tkr, broker_avgp):
+                        had_fast = True
+
                     for sl in self.mgr.state.slots:
                         if sl.state != "SELL_PENDING" or not sl.ticker or sl.trade_id is None:
                             continue
@@ -1087,13 +1198,18 @@ class Engine:
                                 broker_avgp.get(b_tkr),
                             )
 
-                await asyncio.sleep(
-                    config.POSITION_RECONCILE_FAST_S if had_fast else config.POSITION_RECONCILE_SLOW_S,
-                )
+                phase = config.market_phase()
+                market_active = phase in ("regular", "extended")
+                ver = t212_ai.positions_version()
+                if market_active or t212_ai.has_pending_entries() or had_fast:
+                    sleep_s = config.POSITION_RECONCILE_FAST_S
+                else:
+                    sleep_s = config.POSITION_RECONCILE_SLOW_S
+                await t212_ai.wait_positions_update(since_version=ver, timeout=sleep_s)
 
             except Exception:
                 _log.exception("AI position reconciler iteration failed")
-                await asyncio.sleep(config.POSITION_RECONCILE_SLOW_S)
+                await asyncio.sleep(config.POSITION_RECONCILE_FAST_S)
 
     async def _handle_news_tester_message(self, msg: dict[str, Any]) -> None:
         """Discord #news-tester: parse headline post and run the main GPT grader loop."""
@@ -1350,25 +1466,97 @@ class Engine:
                     recent_entry["defer_reason"] = "slot_active"
                     return
 
-        if t212_ai.instrument_map_ready() and t212_ai.resolve_ticker(tk) is None:
-            recent_entry["defer_reason"] = "not_on_t212"
+        entry_result = await entry_rules.evaluate_entry(
+            tk,
+            alert_id,
+            alert,
+            news_class=recent_entry.get("news_class"),
+        )
+        entry_rules.log_decision(tk, alert_id, entry_result)
+        recent_entry["entry_decision"] = entry_result.decision
+        recent_entry["matched_setup"] = entry_result.matched_setup
+        recent_entry["entry_reject_reason"] = entry_result.reject_reason
+        recent_entry["size_grade"] = entry_result.size_grade
+        recent_entry["structure_grade"] = entry_result.structure_grade
+        recent_entry["tape_confirmed"] = entry_result.tape_confirmed
+        recent_entry["entry_notes"] = entry_result.notes
+
+        if entry_result.decision == "SKIP":
+            recent_entry["active_label"] = "SKIP"
+            recent_entry["decision"] = "SKIP"
+            recent_entry["defer_reason"] = entry_result.reject_reason or "entry_rules_skip"
+            try:
+                db.record_candle_decision_episode(tk, alert_id, entry_result.to_dict())
+            except Exception:
+                _log.exception("candle history skip failed %s alert=%s", tk, alert_id)
+            _log.info(
+                "candle skip %s — %s (%s)",
+                tk,
+                entry_result.reject_reason,
+                entry_result.notes,
+            )
             return
 
-        bl = db.t212_blacklist_get(tk)
-        if bl:
-            recent_entry["active_label"] = "FILTERED"
-            recent_entry["defer_reason"] = f"blacklist:{bl.get('reason')}"
+        if entry_result.decision == "WATCH_ONLY":
+            recent_entry["active_label"] = "WATCHING"
+            recent_entry["decision"] = "WATCH_ONLY"
+            recent_entry["defer_reason"] = "entry_rules_watch"
+            try:
+                db.record_candle_decision_episode(tk, alert_id, entry_result.to_dict())
+            except Exception:
+                _log.exception("candle history watch failed %s alert=%s", tk, alert_id)
+            _log.info(
+                "candle watch %s — size=%s structure=%s tape=%s",
+                tk,
+                entry_result.size_grade,
+                entry_result.structure_grade,
+                entry_result.tape_confirmed,
+            )
             return
+
+        exec_block: str | None = None
+        if t212_ai.instrument_map_ready() and t212_ai.resolve_ticker(tk) is None:
+            exec_block = "not_on_t212"
+        else:
+            bl = db.t212_blacklist_get(tk)
+            if bl:
+                exec_block = f"blacklist:{bl.get('reason')}"
+        if exec_block:
+            recent_entry["active_label"] = "FILTERED"
+            recent_entry["decision"] = "TRADE_BLOCKED"
+            recent_entry["defer_reason"] = exec_block
+            try:
+                db.record_candle_decision_episode(
+                    tk,
+                    alert_id,
+                    entry_result.to_dict(),
+                    exec_block_reason=exec_block,
+                )
+            except Exception:
+                _log.exception("candle history exec_block failed %s alert=%s", tk, alert_id)
+            _log.info(
+                "candle TRADE_NOW %s — graded but exec blocked (%s)",
+                tk,
+                exec_block,
+            )
+            return
+
+        try:
+            db.record_candle_decision_episode(tk, alert_id, entry_result.to_dict())
+        except Exception:
+            _log.exception("candle history trade failed %s alert=%s", tk, alert_id)
 
         trade = _cm.CandleTradeState.waiting(alert_price, gap_pct=config.candle_entry_gap_pct())
         ysym = price_data.yahoo_symbol(tk)
+        levels_payload = trade.levels.to_dict()
+        levels_payload["entry_meta"] = entry_result.to_dict()
         setup_id = db.candle_setup_create(
             alert_id=alert_id,
             ticker=tk,
             yahoo_symbol=ysym,
             alert_price=alert_price,
             alert_ts=float(recent_entry.get("ts") or time.time()),
-            levels_json=_json.dumps(trade.levels.to_dict()),
+            levels_json=_json.dumps(levels_payload),
         )
         recent_entry["candle_setup_id"] = setup_id
         recent_entry["decision"] = "TRADE"

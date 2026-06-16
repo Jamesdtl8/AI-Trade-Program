@@ -113,6 +113,73 @@ async def _try_confirm_close_from_broker(trade_id: int, ticker: str) -> bool:
     return True
 
 
+async def _resubmit_market_sell(
+    slot: Slot,
+    mgr: SlotManager,
+    ticker: str,
+    *,
+    reason: str,
+    setup: dict[str, Any],
+) -> bool:
+    """Re-place market sell when SELL_PENDING has hung too long with broker qty still open."""
+    trade_id = slot.trade_id
+    if not trade_id or _paper_mode():
+        return False
+    row = db.fetchone(
+        "SELECT status, t212_close_order_id, exit_reason FROM trades WHERE id=?",
+        (int(trade_id),),
+    )
+    if not row or str(row["status"] or "").upper() != "SELL_PENDING":
+        return False
+    retries = int(setup.get("sell_watchdog_retries") or 0)
+    if retries >= 3:
+        return False
+    old_oid = str(row["t212_close_order_id"] or "").strip()
+    if old_oid:
+        try:
+            await t212_ai.cancel_order(old_oid)
+        except Exception:
+            _log.warning("sell watchdog cancel failed %s oid=%s", ticker, old_oid)
+    try:
+        live = await t212_ai.broker_long_quantity(ticker, retries=2)
+    except Exception:
+        live = -1.0
+    if live >= 0 and live <= 1e-6:
+        await mgr.release_after_sell(slot)
+        await _try_confirm_close_from_broker(int(trade_id), ticker)
+        return True
+    prec = t212_ai.quantity_precision(ticker)
+    sell_abs = t212_ai.snap_quantity(float(live), prec)
+    sell_signed = -t212_ai.round_qty(sell_abs)
+    try:
+        res = await t212_ai.place_market(ticker, sell_signed)
+    except Exception as exc:
+        _log.error("sell watchdog resubmit %s failed: %s", ticker, exc)
+        return False
+    if res.get("error") or res.get("stub"):
+        return False
+    close_oid = str(res.get("id") or "")
+    if not close_oid:
+        return False
+    exit_ts_wall = time.time()
+    sell_reason = str(row["exit_reason"] or reason)
+    db.execute(
+        """UPDATE trades SET exit_ts=?, t212_close_order_id=?
+           WHERE id=? AND status='SELL_PENDING'""",
+        (exit_ts_wall, close_oid, int(trade_id)),
+    )
+    setup["sell_watchdog_retries"] = retries + 1
+    _log.warning(
+        "SELL_WATCHDOG retry=%d slot=%d ticker=%s oid=%s qty=%.4f",
+        retries + 1,
+        slot.index,
+        ticker,
+        close_oid,
+        sell_abs,
+    )
+    return True
+
+
 async def _send_market_sell(
     slot: Slot,
     mgr: SlotManager,
@@ -243,6 +310,21 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
                         await _try_confirm_close_from_broker(int(trade_id), ticker)
                     return
                 if trade_id and not _paper_mode():
+                    pend_row = db.fetchone(
+                        "SELECT exit_ts FROM trades WHERE id=? AND status='SELL_PENDING'",
+                        (int(trade_id),),
+                    )
+                    if pend_row:
+                        pending_sec = time.time() - float(pend_row["exit_ts"] or time.time())
+                        if pending_sec >= config.candle_sell_watchdog_seconds():
+                            await _resubmit_market_sell(
+                                slot,
+                                mgr,
+                                ticker,
+                                reason=str(setup.get("reason") or "sell_watchdog"),
+                                setup=setup,
+                            )
+                if trade_id and not _paper_mode():
                     pos_row = await t212_ai.position_row_for_ticker(ticker, bypass_cache=False)
                     if pos_row:
                         try:
@@ -266,6 +348,12 @@ async def run_slot(slot: Slot, mgr: SlotManager, setup: dict[str, Any]) -> None:
 
             if slot.state != "ACTIVE":
                 return
+
+            # Candle-model trades: candle_monitor owns exits (1m stop / 1s ramp / −18% emergency).
+            # This loop only handles SELL_PENDING fill watchdog for those slots.
+            if setup.get("candle_model"):
+                continue
+
             if not config.trading_enabled():
                 continue
 
