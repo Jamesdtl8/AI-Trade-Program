@@ -97,6 +97,13 @@ def main() -> None:
         _ai_service.start_in_background()
     except Exception:
         _log.exception("AI sandbox engine failed to start")
+
+    try:
+        from ai_sandbox import discord_trader as _dt
+
+        _dt.start_in_background()
+    except Exception:
+        _log.exception("Discord Trader failed to start")
     host = (os.environ.get("AI_TRADE_PROGRAM_HOST") or "127.0.0.1").strip()
     port_raw = (os.environ.get("AI_TRADE_PROGRAM_PORT") or "5077").strip()
     try:

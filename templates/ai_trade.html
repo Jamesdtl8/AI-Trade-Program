@@ -2099,6 +2099,7 @@
   </div>
     <div class="header-center" id="navTabs">
     <button type="button" class="nav-tab active" data-nav="ai-trade" aria-label="AI Trade" aria-current="page"><span class="nav-tab-full">AI Trade</span><span class="nav-tab-mini" aria-hidden="true">AI</span></button>
+    <button type="button" class="nav-tab" data-nav="discord-trader" aria-label="Discord Trader"><span class="nav-tab-full">Discord Trader</span><span class="nav-tab-mini" aria-hidden="true">DT</span></button>
     <button type="button" class="nav-tab" data-nav="reasoning-test" aria-label="Reasoning Test"><span class="nav-tab-full">Reasoning Test</span><span class="nav-tab-mini" aria-hidden="true">Lab</span></button>
   </div>
   <div class="header-right">
@@ -2983,6 +2984,541 @@
   </div>
 </div>
 
+<div id="page-discord-trader" class="page-view">
+  <div class="ai-page" style="max-width:1200px">
+
+    <!-- header row -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+      <div class="ai-section-title" style="margin:0"><span class="dot" id="dt-status-dot" style="background:var(--text3)"></span> Discord Trader</div>
+      <span id="dt-bot-badge" style="font-size:11px;padding:2px 8px;border-radius:10px;background:var(--bg3);color:var(--text3)">connecting…</span>
+      <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
+        <div class="dt-stat-pill" id="dt-account-val">Account: —</div>
+        <div class="dt-stat-pill dt-pnl" id="dt-day-pnl">Day P&L: —</div>
+      </div>
+    </div>
+
+    <!-- open positions -->
+    <div class="ai-section-title" style="font-size:13px;margin-bottom:8px">Live Trades</div>
+    <div class="ai-slots" id="dt-open-positions" style="margin-bottom:20px">
+      <div class="dt-empty">No open positions</div>
+    </div>
+
+    <!-- trade history -->
+    <div class="dt-hist-header">
+      <div class="ai-section-title" style="margin:0;font-size:13px">Trade History</div>
+      <div class="dt-hist-filters" id="dt-hist-filters">
+        <button type="button" class="dt-hist-filter active" data-filter="all">ALL</button>
+        <button type="button" class="dt-hist-filter" data-filter="trades">TRADES</button>
+        <button type="button" class="dt-hist-filter" data-filter="wins">WINS</button>
+        <button type="button" class="dt-hist-filter" data-filter="losses">LOSSES</button>
+      </div>
+    </div>
+    <div class="dt-hist-scroll" style="margin-bottom:20px">
+      <div class="dt-hist-cols dt-hist-head">
+        <span>DATE</span><span>TICKER</span><span>TYPE</span><span>ENTRY</span><span>ENTRY GAP</span>
+        <span>EXIT</span><span>EXIT GAP</span><span>TRIGGER</span><span>RESULT</span><span>P&amp;L</span><span>FEES</span><span>HOLD</span>
+      </div>
+      <div id="dt-history-rows">
+        <div class="dt-empty">No trades yet</div>
+      </div>
+    </div>
+
+    <!-- recent Discord messages -->
+    <div class="ai-section-title" style="font-size:13px;margin-bottom:8px">Recent Messages</div>
+    <div id="dt-messages-feed" style="font-family:var(--font-mono,monospace);font-size:11px;background:var(--bg2);border:1px solid var(--border1);border-radius:6px;max-height:340px;overflow-y:auto;">
+      <div id="dt-messages-inner" style="display:flex;flex-direction:column;padding:6px 10px;gap:2px;">
+        <div data-placeholder style="color:var(--text3);padding:4px 0">Waiting for messages…</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<style>
+.dt-stat-pill{font-size:12px;padding:3px 10px;border-radius:12px;background:var(--bg3);color:var(--text2);font-variant-numeric:tabular-nums}
+.dt-stat-pill.dt-pnl.up{color:var(--green);background:var(--green-dim)}
+.dt-stat-pill.dt-pnl.down{color:var(--red);background:var(--red-dim,rgba(235,87,87,.12))}
+.dt-empty{color:var(--text3);font-size:12px;padding:12px 10px}
+.dt-hist-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;flex-wrap:wrap}
+.dt-hist-filters{display:flex;gap:2px;background:var(--bg2);border:1px solid var(--border1);border-radius:6px;padding:2px}
+.dt-hist-filter{border:0;background:transparent;color:var(--text3);font-family:var(--mono,monospace);font-size:10px;font-weight:700;letter-spacing:.6px;padding:5px 12px;border-radius:4px;cursor:pointer}
+.dt-hist-filter:hover{color:var(--text2)}
+.dt-hist-filter.active{background:var(--bg3);color:var(--text1)}
+.dt-hist-scroll{overflow-x:auto;border:1px solid var(--border1);border-radius:8px;background:var(--bg2)}
+.dt-hist-cols{display:grid;grid-template-columns:52px 62px 58px 64px 52px 64px 52px minmax(140px,1.4fr) 58px 58px 44px 56px;gap:6px 8px;padding:8px 10px;font-family:var(--mono,monospace);font-size:11px;align-items:center;min-width:900px}
+.dt-hist-head{font-size:9px;color:var(--text3);letter-spacing:.5px;text-transform:uppercase;border-bottom:1px solid var(--border1);background:var(--bg2);position:sticky;top:0;z-index:1}
+.dt-hist-row{border-bottom:1px solid var(--border1);color:var(--text2)}
+.dt-hist-row:last-child{border-bottom:0}
+.dt-hist-row:hover{background:var(--bg3)}
+.dt-hist-row.win{border-left:3px solid var(--green)}
+.dt-hist-row.loss{border-left:3px solid var(--red)}
+.dt-hist-row.open{border-left:3px solid var(--blue,#4fc3f7)}
+.dt-hist-row.pending{border-left:3px solid var(--amber)}
+.dt-hist-row.blocked{border-left:3px solid var(--red)}
+.dt-hist-row.win .dt-hist-ticker{color:var(--green)}
+.dt-hist-row.loss .dt-hist-ticker{color:var(--red)}
+.dt-hist-row.open .dt-hist-ticker{color:var(--blue,#4fc3f7)}
+.dt-hist-row.pending .dt-hist-ticker{color:var(--amber)}
+.dt-hist-row.blocked .dt-hist-ticker{color:var(--red)}
+.dt-hist-ticker{font-weight:700}
+.dt-hist-type{display:inline-block;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700;letter-spacing:.4px}
+.dt-hist-type.normal{background:#c47f1a;color:#1a1208}
+.dt-hist-type.break{background:#1e5a8a;color:#e8f4ff}
+.dt-hist-trigger{color:var(--text3);font-size:10px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dt-hist-result.up,.dt-hist-pnl.up,.dt-hist-num.up{color:var(--green)}
+.dt-hist-result.down,.dt-hist-pnl.down,.dt-hist-num.down{color:var(--red)}
+.dt-hist-result.muted,.dt-hist-pnl.muted,.dt-hist-num.muted{color:var(--text3)}
+.dt-hist-result.warn{color:var(--amber)}
+.dt-hist-num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.dt-card{background:var(--bg2);border:1px solid var(--border1);border-radius:8px;padding:12px 14px;margin-bottom:8px;display:grid;grid-template-columns:auto 1fr auto;gap:8px 16px;align-items:start}
+.dt-card .dt-ticker{font-weight:700;font-size:15px;color:var(--text1)}
+.dt-card .dt-meta{font-size:11px;color:var(--text3)}
+.dt-card .dt-pnl-big{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+.dt-card .dt-pnl-big.up{color:var(--green)} .dt-card .dt-pnl-big.down{color:var(--red)}
+.dt-card .dt-close-btn{font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border1);background:transparent;color:var(--text2);cursor:pointer;margin-top:4px}
+.dt-card .dt-close-btn:hover{background:var(--red);color:#fff;border-color:var(--red)}
+.dt-watch-card{background:var(--bg2);border:1px solid var(--border1);border-radius:8px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px}
+.dt-watch-card .dt-wticker{font-weight:700;font-size:13px}
+.dt-watch-card .dt-wmeta{font-size:11px;color:var(--text3);flex:1}
+.dt-watch-card .dt-cancel-btn{font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid var(--border1);background:transparent;color:var(--text3);cursor:pointer}
+.dt-watch-card .dt-cancel-btn:hover{background:var(--red-dim,rgba(235,87,87,.15));border-color:var(--red)}
+</style>
+
+<script>
+(function(){
+  let _dtTimer = null;
+  let _dtRunning = false;
+  let _dtPollMs = 30000;
+
+  function _dtFmt(v, digits){
+    if(v==null||v===''||isNaN(Number(v))) return '—';
+    return Number(v).toFixed(digits??2);
+  }
+  function _dtFmtTs(ts){
+    if(!ts) return '—';
+    const d = new Date(ts*1000);
+    return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'})
+      + ' ' + d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  }
+  function _dtSign(v){ return Number(v)>=0 ? '+' : ''; }
+
+  function _dtEntryType(t){
+    if(!t) return '—';
+    const map = {
+      'limit_buy':'Market Buy','entry_limit_placed':'Limit Entry','break_confirmed':'Break Buy','break_watch':'Break Buy','manual':'Manual',
+      'market_exit':'Market Exit','stop_breach':'Stop Breach',
+    };
+    return map[t] || t;
+  }
+
+  function _dtFmtPrice(v){
+    if (typeof _aiFmtPrice === 'function') return _aiFmtPrice(v);
+    return v == null || v === '' ? '—' : '$' + Number(v).toFixed(4);
+  }
+  function _dtFmtPct(v){
+    if (typeof _aiFmtPct === 'function') return _aiFmtPct(v);
+    if (v == null || v === '' || isNaN(Number(v))) return '—';
+    const n = Number(v);
+    return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+  }
+  function _dtFmtMoney(v){
+    if (typeof _aiFmtMoney === 'function') return _aiFmtMoney(v);
+    if (v == null || v === '' || isNaN(Number(v))) return '—';
+    const n = Number(v);
+    return (n >= 0 ? '+' : '') + '£' + Math.abs(n).toFixed(2);
+  }
+
+  function _dtRenderPositionCard(t){
+    const pending = t.pending_close || String(t.status||'').toUpperCase() === 'SELL_PENDING';
+    const state = pending ? 'sell_pending' : 'active';
+    const stateLbl = pending ? 'SELL PENDING' : 'ACTIVE';
+    const pnl = t.live_unreal_pct != null ? Number(t.live_unreal_pct) : null;
+    const pnlCls = pnl == null ? '' : (pnl > 0 ? 'up' : pnl < 0 ? 'down' : '');
+    const ug = t.live_pnl_gbp;
+    const costGbp = t.wallet_total_cost_gbp != null ? Number(t.wallet_total_cost_gbp) : Number(t.stake_gbp||0);
+    const valueGbp = t.wallet_current_value_gbp != null ? Number(t.wallet_current_value_gbp) : null;
+    const gbpLine = ug != null && !isNaN(Number(ug))
+      ? `<span class="ai-slot-pnl-gbp">${_dtFmtMoney(ug)}</span>` : '';
+    const deployedRow = costGbp > 0
+      ? `<div class="ai-slot-row"><span>Cost</span><b>${_dtFmtMoney(costGbp)}</b></div>` : '';
+    const valueRow = valueGbp != null && !isNaN(valueGbp)
+      ? `<div class="ai-slot-row"><span>Value</span><b>${_dtFmtMoney(valueGbp)}</b></div>` : '';
+    const tpPct = t.tp_pct != null ? Number(t.tp_pct) : null;
+    const closeBtn = (!pending && t.id)
+      ? `<div class="ai-slot-analytics"><button type="button" class="ai-slot-analytics-btn" onclick="_dtCloseTradeUI(${t.id})">Close position</button></div>`
+      : '';
+    return `<div class="ai-slot ${state}">
+      <div class="ai-slot-head">
+        <span class="ai-slot-idx">DISCORD · £${t.stake_gbp ? Math.round(Number(t.stake_gbp)) : '10K'}</span>
+        <span class="ai-slot-state">${stateLbl}</span>
+      </div>
+      <div class="ai-slot-ticker">${t.ticker || '—'}</div>
+      <div class="ai-slot-row"><span>Entry (USD)</span><b>${_dtFmtPrice(t.entry_price)}</b></div>
+      <div class="ai-slot-row"><span>Type / TP</span><b>${_dtEntryType(t.entry_type)}${tpPct ? ' · '+_dtFmt(tpPct,1)+'%' : ''}</b></div>
+      ${deployedRow}
+      ${valueRow}
+      <div class="ai-slot-row"><span>Mark (USD)</span><b>${_dtFmtPrice(t.current_price)}</b></div>
+      <div class="ai-slot-row"><span>Qty</span><b>${_dtFmt(t.quantity,0)}</b></div>
+      <div class="ai-slot-pnl ${pnlCls}">
+        <span class="ai-slot-pnl-pct">${_dtFmtPct(pnl)}</span>
+        ${gbpLine}
+      </div>
+      <div class="ai-slot-decision">${pending ? 'exit in flight' : (_dtEntryType(t.entry_type) + (t.entry_ts ? ' · '+_dtFmtTs(t.entry_ts) : ''))}</div>
+      ${closeBtn}
+    </div>`;
+  }
+
+  async function _dtRefresh(opts){
+    if(_dtRunning) return;
+    _dtRunning = true;
+    const includeMessages = !opts || opts.includeMessages !== false;
+    try {
+      const [statusR, tradesR, acctR] = await Promise.all([
+        fetch('/api/discord-trader/status').then(r=>r.json()).catch(()=>null),
+        fetch('/api/discord-trader/trades?limit=100').then(r=>r.json()).catch(()=>null),
+        fetch('/api/discord-trader/account').then(r=>r.json()).catch(()=>null),
+      ]);
+      _dtRenderStatus(statusR, {includeMessages});
+      _dtRenderTrades(tradesR, statusR);
+      const acctEl = document.getElementById('dt-account-val');
+      if(acctR && acctR.ok && acctR.total != null){
+        acctEl.textContent = 'Account: £' + Number(acctR.total).toFixed(2);
+      }
+    } catch(e){
+      console.warn('dt refresh error', e);
+    } finally {
+      _dtRunning = false;
+    }
+  }
+
+  function _dtRenderStatus(s, opts){
+    if(!s) return;
+    const includeMessages = !opts || opts.includeMessages !== false;
+    const dot = document.getElementById('dt-status-dot');
+    const badge = document.getElementById('dt-bot-badge');
+    if(s.enabled && s.bot_connected){
+      dot.style.background = 'var(--green)';
+      badge.textContent = '● Connected';
+      badge.style.color = 'var(--green)';
+      badge.style.background = 'var(--green-dim)';
+    } else if(s.enabled){
+      dot.style.background = 'orange';
+      badge.textContent = '● Enabled · Connecting…';
+      badge.style.color = 'orange';
+      badge.style.background = 'rgba(255,160,0,.12)';
+    } else {
+      dot.style.background = 'var(--text3)';
+      badge.textContent = '○ Disabled';
+      badge.style.color = 'var(--text3)';
+      badge.style.background = 'var(--bg3)';
+    }
+
+    const posEl = document.getElementById('dt-open-positions');
+    const cards = (s.broker_positions || []).length ? (s.broker_positions || []) : (s.open_trades || []);
+    posEl.innerHTML = cards.length === 0
+      ? '<div class="dt-empty">No open positions</div>'
+      : cards.map(_dtRenderPositionCard).join('');
+
+    if (!includeMessages) return;
+    const inner = document.getElementById('dt-messages-inner');
+    const msgs = (s.recent_messages || []);
+    if(msgs.length === 0){
+      inner.innerHTML = '<div style="color:var(--text3);padding:4px 0">No messages yet — waiting for Discord activity…</div>';
+      return;
+    }
+    // API returns newest-first (ORDER BY received_ts DESC)
+    inner.innerHTML = msgs.map(m => _dtMsgRow(m)).join('');
+  }
+
+  function _dtMsgRow(m){
+    const ts = new Date((m.received_ts||0)*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const type = m.parsed_type;
+    const isAction = type && type !== 'ignored';
+    const tagColor = type === 'entry_limit_placed' || type === 'limit_buy' ? 'var(--green)' : (type === 'break_confirmed' || type === 'break_watch') ? '#4fc3f7' : type === 'market_exit' ? '#ef5350' : type === 'stop_breach' ? '#ef5350' : 'var(--text3)';
+    const tag = isAction ? `<span style="color:${tagColor};font-weight:600;margin-right:4px">[${_dtEntryType(type)}]</span>` : '';
+    const preview = (m.content||'').replace(/\*\*/g,'').split('\n')[0].slice(0,140);
+    const rowColor = isAction ? 'rgba(255,255,255,0.04)' : 'transparent';
+    return `<div style="padding:3px 4px;border-radius:3px;background:${rowColor};line-height:1.5">
+      <span style="color:var(--text3);margin-right:6px">${ts}</span>${tag}<span style="color:var(--text2)">${_escHtml(preview)}</span>
+    </div>`;
+  }
+
+  function _escHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  // Real-time single message prepend (called from SSE) — newest at top
+  function _dtPrependMsg(m){
+    const inner = document.getElementById('dt-messages-inner');
+    if(!inner) return;
+    const placeholder = inner.querySelector('[data-placeholder]');
+    if(placeholder) placeholder.remove();
+    inner.insertAdjacentHTML('afterbegin', _dtMsgRow(m));
+    while(inner.children.length > 200) inner.removeChild(inner.lastChild);
+  }
+
+  function _dtRejectReason(t){
+    if(!t || t.status !== 'REJECTED') return '';
+    if(t.reject_reason) return t.reject_reason;
+    const e = String(t.t212_error || '');
+    if(e === 'instrument_not_found') return 'Not listed on T212';
+    if(/insufficient/i.test(e)) return 'Insufficient funds';
+    if(/invalid payload/i.test(e)) return 'Invalid order payload';
+    return e.slice(0, 120) || 'Rejected';
+  }
+
+  let _dtHistFilter = 'all';
+  let _dtLastTradesR = null;
+  let _dtLastStatusR = null;
+
+  function _dtFmtDate(ts){
+    if(!ts) return '—';
+    const d = new Date(ts*1000);
+    return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'});
+  }
+
+  function _dtHoldTime(t){
+    const start = Number(t.entry_ts || t.created_ts || 0);
+    const end = t.status === 'OPEN'
+      ? Date.now()/1000
+      : Number(t.exit_ts || 0);
+    if(!start || !end) return '—';
+    let s = Math.max(0, Math.round(end - start));
+    if(s < 60) return s + 's';
+    const m = Math.floor(s/60);
+    const rs = s % 60;
+    if(m < 60) return m + 'm' + (rs ? ' ' + rs + 's' : '');
+    const h = Math.floor(m/60);
+    return h + 'h' + (m%60 ? ' ' + (m%60) + 'm' : '');
+  }
+
+  function _dtTypeBadge(entryType){
+    const et = String(entryType||'').toLowerCase();
+    if(et === 'break_confirmed' || et === 'break_watch') return '<span class="dt-hist-type break">BREAK</span>';
+    return '<span class="dt-hist-type normal">NORMAL</span>';
+  }
+
+  function _dtHumanTrigger(t){
+    const st = String(t.status||'').toUpperCase();
+    if(st === 'REJECTED') return _dtRejectReason(t);
+    if(st === 'OPEN') return 'Open • Live position';
+    if(st === 'SELL_PENDING') return 'Exit • Sell pending';
+    const r = String(t.exit_reason||'').toLowerCase();
+    const map = {
+      market_exit: 'Exit • Market sell',
+      stop_breach: 'Exit • Stop breached',
+      emergency_stop: 'Exit • Emergency stop (-20%)',
+      tp_hit: 'Closed • Take profit',
+      end_of_day: 'Closed • End of day',
+      manual: 'Closed • Manual',
+      broker_flat: 'Closed • Reconcile',
+      duplicate_adopt: 'Closed • Duplicate',
+    };
+    if(map[r]) return map[r];
+    if(r) return r.replace(/_/g,' ');
+    return '—';
+  }
+
+  function _dtHistRowClass(t){
+    const st = String(t.status||'').toUpperCase();
+    if(st === 'OPEN') return 'open';
+    if(st === 'SELL_PENDING') return 'pending';
+    if(st === 'REJECTED') return 'blocked';
+    if(st === 'CLOSED'){
+      const g = Number(t.pnl_gbp ?? 0);
+      return g >= 0 ? 'win' : 'loss';
+    }
+    return 'blocked';
+  }
+
+  function _dtIsReconcileGhost(t){
+    const r = String(t.exit_reason||'').toLowerCase();
+    if(r !== 'duplicate_adopt' && r !== 'broker_flat') return false;
+    return Math.abs(Number(t.pnl_gbp ?? 0)) < 0.01;
+  }
+
+  function _dtFilterTrades(all){
+    if(_dtHistFilter === 'trades') return all.filter(t => {
+      const st = String(t.status||'').toUpperCase();
+      if(!['OPEN','SELL_PENDING','CLOSED'].includes(st)) return false;
+      return !_dtIsReconcileGhost(t);
+    });
+    if(_dtHistFilter === 'wins') return all.filter(t => String(t.status)==='CLOSED' && Number(t.pnl_gbp||0) >= 0);
+    if(_dtHistFilter === 'losses') return all.filter(t => {
+      const st = String(t.status||'').toUpperCase();
+      return st === 'REJECTED' || (st === 'CLOSED' && Number(t.pnl_gbp||0) < 0);
+    });
+    return all;
+  }
+
+  function _dtRenderHistRow(t){
+    const isOpen = t.status === 'OPEN';
+    const isPending = t.status === 'SELL_PENDING';
+    const isRej = t.status === 'REJECTED';
+    const livePct = isOpen ? t.live_unreal_pct : null;
+    const liveGbp = isOpen ? t.live_pnl_gbp : null;
+    const pnlPct = isRej ? null : (isOpen ? livePct : t.pnl_pct);
+    const pnlGbp = isRej ? null : (isOpen ? liveGbp : t.pnl_gbp);
+    const entry = Number(t.entry_price||0);
+    const exit = Number(t.exit_price||0);
+    let exitGap = null;
+    if(entry > 0 && exit > 0) exitGap = ((exit - entry) / entry) * 100;
+    const rowCls = _dtHistRowClass(t);
+    let resultTxt = '—';
+    let resultCls = 'muted';
+    if(isRej){ resultTxt = 'Error'; resultCls = 'down'; }
+    else if(isPending){ resultTxt = 'Pending'; resultCls = 'warn'; }
+    else if(isOpen && livePct != null){ resultTxt = _dtFmtPct(livePct); resultCls = Number(livePct) >= 0 ? 'up' : 'down'; }
+    else if(pnlPct != null){ resultTxt = _dtFmtPct(pnlPct); resultCls = Number(pnlPct) >= 0 ? 'up' : 'down'; }
+    let pnlTxt = '—';
+    let pnlCls = 'muted';
+    if(isRej){ pnlTxt = '—'; }
+    else if(isPending){ pnlTxt = '—'; }
+    else if(isOpen && liveGbp != null){ pnlTxt = _dtFmtMoney(liveGbp); pnlCls = Number(liveGbp) >= 0 ? 'up' : 'down'; }
+    else if(pnlGbp != null){ pnlTxt = _dtFmtMoney(pnlGbp); pnlCls = Number(pnlGbp) >= 0 ? 'up' : 'down'; }
+    const ts = t.entry_ts || t.created_ts;
+    return `<div class="dt-hist-cols dt-hist-row ${rowCls}" title="${isRej ? _escHtml(String(t.t212_error||'')) : ''}">
+      <span class="dt-hist-num">${_dtFmtDate(ts)}</span>
+      <span class="dt-hist-ticker">${t.ticker||'—'}</span>
+      <span>${_dtTypeBadge(t.entry_type)}</span>
+      <span class="dt-hist-num">${_dtFmtPrice(t.entry_price)}</span>
+      <span class="dt-hist-num muted">—</span>
+      <span class="dt-hist-num">${isPending ? 'pending' : _dtFmtPrice(isRej ? null : t.exit_price)}</span>
+      <span class="dt-hist-num ${exitGap!=null ? (exitGap>=0?'up':'down') : 'muted'}">${exitGap!=null ? _dtFmtPct(exitGap) : '—'}</span>
+      <span class="dt-hist-trigger" title="${_escHtml(_dtHumanTrigger(t))}">${_escHtml(_dtHumanTrigger(t))}</span>
+      <span class="dt-hist-result dt-hist-num ${resultCls}">${resultTxt}</span>
+      <span class="dt-hist-pnl dt-hist-num ${pnlCls}">${pnlTxt}</span>
+      <span class="dt-hist-num muted">—</span>
+      <span class="dt-hist-num">${_dtHoldTime(t)}</span>
+    </div>`;
+  }
+
+  function _dtRenderTrades(tradesR, statusR){
+    const root = document.getElementById('dt-history-rows');
+    if(!root || !tradesR || !tradesR.trades) return;
+    _dtLastTradesR = tradesR;
+    _dtLastStatusR = statusR;
+    const all = tradesR.trades || [];
+    const rows = _dtFilterTrades(all);
+    root.innerHTML = rows.length === 0
+      ? '<div class="dt-empty">No trades yet</div>'
+      : rows.map(_dtRenderHistRow).join('');
+
+    const open = all.filter(t => t.status === 'OPEN');
+    const today = new Date().toDateString();
+    const todayClosed = all.filter(t=>{
+      const d = new Date((t.exit_ts||t.created_ts||0)*1000).toDateString();
+      return d===today && t.status==='CLOSED';
+    });
+    const dayPnl = todayClosed.reduce((s,t)=>s+Number(t.pnl_gbp||0),0)
+      + open.reduce((s,t)=>s+Number(t.live_pnl_gbp||0),0);
+    const dayEl = document.getElementById('dt-day-pnl');
+    dayEl.textContent = 'Day P&L: ' + (dayPnl>=0?'+':'') + '£' + dayPnl.toFixed(2);
+    dayEl.className = 'dt-stat-pill dt-pnl ' + (dayPnl>=0?'up':'down');
+
+    // Faster refresh while positions are open (like AI Trade tab)
+    const hasLive = (statusR && ((statusR.broker_positions||[]).length || (statusR.open_trades||[]).length));
+    if(hasLive && (!_dtTimer || _dtPollMs > 2000)){
+      if(_dtTimer) clearInterval(_dtTimer);
+      _dtPollMs = 2000;
+      _dtTimer = setInterval(_dtRefresh, _dtPollMs);
+    } else if(!hasLive && _dtPollMs !== 30000){
+      if(_dtTimer) clearInterval(_dtTimer);
+      _dtPollMs = 30000;
+      _dtTimer = setInterval(_dtRefresh, _dtPollMs);
+    }
+  }
+
+  window._dtCloseTradeUI = async function(tradeId){
+    if(!confirm('Close dt_trade #'+tradeId+'?')) return;
+    try {
+      const r = await fetch('/api/discord-trader/close/'+tradeId, {method:'POST'});
+      const j = await r.json();
+      if(!j.ok) alert('Close failed: '+(j.error||r.status));
+      else _dtRefresh();
+    } catch(e){ alert('Error: '+e); }
+  };
+
+  // ── SSE real-time push ────────────────────────────────────────────────────
+  let _dtSSE = null;
+  let _dtSSERetry = 1000;
+
+  function _dtStartPoll(){
+    if(_dtTimer) clearInterval(_dtTimer);
+    _dtPollMs = 1000;
+    _dtTimer = setInterval(() => {
+      if (typeof _currentPage !== 'undefined' && _currentPage === 'discord-trader') {
+        _dtRefresh({includeMessages: false});
+      }
+    }, _dtPollMs);
+  }
+
+  function _dtStartSSE() {
+    if (_dtSSE) return;
+    _dtSSE = new EventSource('/api/discord-trader/events');
+
+    _dtSSE.addEventListener('connected', () => {
+      _dtSSERetry = 1000;
+      _dtRefresh({includeMessages: true});
+    });
+
+    _dtSSE.addEventListener('message', (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        _dtPrependMsg({
+          received_ts: d.ts,
+          content: d.content,
+          parsed_type: d.parsed_type,
+        });
+        const actionable = ['entry_limit_placed','stop_breach','market_exit'];
+        if (actionable.includes(d.parsed_type)) _dtRefresh({includeMessages: false});
+      } catch(_){}
+    });
+
+    _dtSSE.addEventListener('trade_update', () => {
+      _dtRefresh({includeMessages: false});
+    });
+
+    _dtSSE.onerror = () => {
+      _dtSSE.close();
+      _dtSSE = null;
+      // Reconnect with backoff (max 30s)
+      setTimeout(_dtStartSSE, _dtSSERetry);
+      _dtSSERetry = Math.min(_dtSSERetry * 2, 30000);
+    };
+  }
+
+  // Hook into showPage — start SSE when Discord Trader tab is opened, keep a slow
+  // fallback poll (30s) to keep account value fresh even with no new messages
+  if(typeof showPage !== 'undefined'){
+    const __origSP = showPage;
+    window.showPage = function(name){
+      __origSP(name);
+      if(name === 'discord-trader'){
+        _dtStartSSE();
+        _dtStartPoll();
+        _dtRefresh({includeMessages: true});
+      } else {
+        if(_dtTimer){ clearInterval(_dtTimer); _dtTimer = null; }
+      }
+    };
+  }
+
+  document.getElementById('dt-hist-filters')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.dt-hist-filter');
+    if(!btn) return;
+    _dtHistFilter = btn.dataset.filter || 'all';
+    document.querySelectorAll('.dt-hist-filter').forEach(b => b.classList.toggle('active', b === btn));
+    if(_dtLastTradesR) _dtRenderTrades(_dtLastTradesR, _dtLastStatusR);
+  });
+
+  // Initial load when script runs (messages included once)
+  if (typeof _currentPage !== 'undefined' && _currentPage === 'discord-trader') {
+    _dtStartSSE();
+    _dtStartPoll();
+  }
+  _dtRefresh({includeMessages: true});
+})();
+</script>
+
 <div id="page-reasoning-test" class="page-view">
   <div class="ai-page">
     <div class="ai-section-title"><span class="dot"></span> Reasoning Test</div>
@@ -3241,7 +3777,7 @@ function escapeHtml(s) {
 let _currentPage = 'ai-trade';
 let _reasoningAbort = null;
 const NAV_TAB_STORAGE_KEY = 'pulse_ai_nav_tab';
-const NAV_TAB_IDS = new Set(['ai-trade', 'reasoning-test']);
+const NAV_TAB_IDS = new Set(['ai-trade', 'discord-trader', 'reasoning-test']);
 
 function rtBuildPathWaypointGrid() {
   const grid = document.getElementById('rt-path-grid');
@@ -4100,11 +4636,14 @@ function _aiRenderMonitorLogTable(monitor, analytics) {
     const raw = String(row.raw_response || '');
     const isExit = raw === 'exit_trigger';
     const isTick = raw === 'tick_1s';
+    const isTick30 = raw === 'tick_30s';
     const details = isTick
       ? '1s tick'
+      : isTick30
+      ? '30s tick'
       : escapeHtml(String(row.ai_decision || (isExit ? '' : raw) || ''));
     const stripe = idx % 2 === 1 ? ' ai-ta-log-stripe' : '';
-    const rowCls = `${stripe}${isExit ? ' exit-trigger' : ''}${isTick ? ' tick-1s' : ''}`.trim();
+    const rowCls = `${stripe}${isExit ? ' exit-trigger' : ''}${isTick ? ' tick-1s' : ''}${isTick30 ? ' tick-30s' : ''}`.trim();
     return `<tr class="${rowCls}"><td class="time">${t}</td><td class="price">${_aiFmtPrice(row.price)}</td><td class="pnl ${pnlCls}">${pnlStr}</td><td class="dec">${details}</td></tr>`;
   }).join('');
   return `
@@ -4215,8 +4754,9 @@ async function _aiOpenTradeAnalyticsDrawer(tradeId) {
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _aiCloseDrawer(); });
   }
   try {
-    const ar = await fetch('/api/ai/trade/' + tradeId + '/analytics').then((x) => x.json());
-    if (!ar.ok) throw new Error(ar.error || 'fail');
+    const resp = await fetch('/api/ai/trade/' + tradeId + '/analytics');
+    const ar = await resp.json().catch(() => ({}));
+    if (!resp.ok || !ar.ok) throw new Error(ar.error || `analytics HTTP ${resp.status}`);
     const meta = _aiTradePanelFromRow(ar.trade);
     $('ai-drawer-title').textContent = meta ? `${meta.ticker} · trade analytics` : `Trade #${tradeId} · analytics`;
     body.innerHTML = _aiRenderTradeAnalyticsPanel(ar.analytics, ar.trade, ar.monitor, {
@@ -4357,6 +4897,14 @@ function _aiHumanReason(code) {
   const map = {
     stop_loss_10pct: 'Hit Stop Loss 10%',
     trail_breach: 'Trailing Stop Hit',
+    stopped_before_trigger: 'Stop — below E×0.90 before +7.5% ramp (1m close)',
+    emergency_stop_18pct: 'Emergency stop — 1s tick at −18% loss',
+    protected_profit_exit: 'Protected — below +7.5% floor (1m close)',
+    runner_trail_exit: 'Runner trail — 15% below peak close (1m close)',
+    unprotected_end_day: 'EOD flat — before protection (1m close)',
+    protected_end_day: 'EOD flat — while protected (1m close)',
+    runner_end_day: 'EOD flat — runner (1m close)',
+    momentum_scratch_90s: '90s scratch — no momentum (peak <3%)',
     staged_stop_before_trigger: 'Stop — below E×0.90 before +10% (1m close)',
     staged_protected_close: 'Protected — below +7.5% floor (1m close)',
     staged_runner_trail_close: 'Runner trail — 15% below peak close (1m close)',
@@ -4423,6 +4971,7 @@ function _aiFeedBucket(m) {
   if (_aiFeedIsActive(m)) return 'active';
   if (label === 'FILTERED' || st === 'PASS' || st === 'DISQUALIFIED') return 'filtered';
   if (m.decision === 'SKIP') return 'filtered';
+  if (m.decision === 'WATCH_ONLY') return 'active';
   if (m.decision === 'TRADE' || label === 'TRADE' || st === 'TRADE') return 'filtered';
   return 'active';
 }
@@ -4454,8 +5003,14 @@ function _aiFeedRow(m, sectionKey) {
   else if (tag === 'REVIEW') { cls = 'watch'; }
   else if (tag === 'WATCHING') { cls = 'watch-news'; }
   else if (tag === 'NEW') { cls = 'news'; }
+  else if (m.decision === 'WATCH_ONLY') {
+    tag = 'WATCH';
+    cls = 'watch';
+  }
   else if (isFiltered) {
-    tag = tag || _aiHumanReason(m.disqualify_reason || (m.grader_state === 'PASS' ? 'ai_pass' : 'disqualified'));
+    const skipWhy = m.entry_reject_reason || m.disqualify_reason
+      || (m.grader_state === 'PASS' ? 'ai_pass' : '');
+    tag = tag || _aiHumanReason(skipWhy || 'entry_rules_skip');
     cls = 'kill';
   } else if (m.score != null) { tag = (m.decision || 'SKIP') + ' ' + m.score; cls = 'skip'; }
   else { tag = tag || 'NEW'; cls = 'news'; }
@@ -4923,20 +5478,19 @@ function _aiRenderAlertHistory(history, currentAlertId) {
 function _aiReviewOutcomeClass(grade, action) {
   const a = String(action || '').toUpperCase();
   const g = String(grade || '').toUpperCase();
-  if (a === 'TRADE' || g === 'STRONG') return 'trade';
-  if (a === 'MONITOR' || g === 'WATCH') return 'watch';
+  if (a === 'TRADE_NOW' || g === 'TRADE_NOW' || a === 'TRADE' || g === 'STRONG') return 'trade';
+  if (a === 'WATCH_ONLY' || g === 'WATCH_ONLY' || a === 'MONITOR' || g === 'WATCH') return 'watch';
   return 'skip';
 }
 
 function _aiReviewOutcomeLabel(grade, action) {
   const a = String(action || '').toUpperCase();
   const g = String(grade || '').toUpperCase();
-  if (a === 'TRADE' || (g === 'STRONG' && a !== 'PASS')) return 'TRADE';
-  if (a === 'MONITOR' || g === 'WATCH') return 'WATCH';
-  if (a === 'PASS' || g === 'SKIP') return 'PASS';
-  if (g === 'STRONG') return 'TRADE';
-  if (g === 'WATCH') return 'WATCH';
-  return 'PASS';
+  if (a === 'TRADE_NOW' || g === 'TRADE_NOW' || a === 'TRADE' || g === 'STRONG') return 'TRADE';
+  if (a === 'WATCH_ONLY' || g === 'WATCH_ONLY' || a === 'MONITOR' || g === 'WATCH') return 'WATCH';
+  if (a === 'SKIP' || g === 'SKIP') return 'SKIP';
+  if (a === 'PASS') return 'PASS';
+  return g || a || '—';
 }
 
 function _aiRenderAiReviewTable(reviews) {
@@ -5226,6 +5780,10 @@ function _aiRenderWatchHistory(wh) {
     DROP_CAP:      'drop-cap',
     DROP_BLACKLIST:'drop-cap',
     EXPIRED:       'expired',
+    CANDLE_SKIP:   'drop-skip',
+    CANDLE_WATCH:  'trade-open',
+    CANDLE_TRADE:  'upgrade',
+    EXEC_BLOCKED:  'drop-cap',
   }[r] || 'drop-cap');
   const reasonLabel = (r) => ({
     WATCH_ACTIVE: 'LIVE',
@@ -5238,11 +5796,22 @@ function _aiRenderWatchHistory(wh) {
     TRADE_OPEN:    'POSITION',
     TRADE_CLOSED:  'TRADE',
     TRADE_FAILED:  'FAIL',
+    CANDLE_SKIP:   'SKIP',
+    CANDLE_WATCH:  'WATCH',
+    CANDLE_TRADE:  'TRADE',
+    EXEC_BLOCKED:  'BLOCKED',
   }[r] || r);
 
   const episodeClassFor = (it, reasonKey) => {
     const et = it.episode_type || 'WATCH';
     if (reasonKey === 'WATCH_ACTIVE') return 'trade-open';
+    if (et === 'CANDLE') {
+      if (reasonKey === 'CANDLE_SKIP') return 'drop-skip';
+      if (reasonKey === 'CANDLE_WATCH') return 'trade-open';
+      if (reasonKey === 'EXEC_BLOCKED') return 'drop-cap';
+      if (reasonKey === 'CANDLE_TRADE') return 'upgrade';
+      return 'drop-cap';
+    }
     if (et === 'TRADE') {
       if (reasonKey === 'TRADE_OPEN') return 'trade-open';
       if (reasonKey === 'TRADE_CLOSED') return 'trade-closed';

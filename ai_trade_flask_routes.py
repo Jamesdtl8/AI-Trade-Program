@@ -848,10 +848,10 @@ def api_ai_feed():
     fetch_cap = min(5000, max(500, limit * 40 if day == "all" else limit * 25))
     sql = """
         SELECT a.id AS alert_id, a.ts, a.ticker, a.type, a.raw, a.news_class, a.parsed_json,
-               s.score, s.decision, s.reason
+               s.score, s.decision, s.reason, s.raw_json AS score_raw_json
         FROM alerts a
         LEFT JOIN (
-            SELECT alert_id, score, decision, reason,
+            SELECT alert_id, score, decision, reason, raw_json,
                    ROW_NUMBER() OVER (PARTITION BY alert_id ORDER BY ts DESC) AS rn
             FROM scores
         ) s ON s.alert_id = a.id AND s.rn = 1
@@ -977,6 +977,17 @@ def api_ai_feed():
         ):
             active_label = "WATCHING"
             grader_st = "WATCHING"
+        score_payload: dict = {}
+        if d.get("score_raw_json"):
+            try:
+                score_payload = _json.loads(d["score_raw_json"])
+            except Exception:
+                score_payload = {}
+        entry_reject = score_payload.get("reject_reason")
+        if not entry_reject and eff_decision in ("SKIP", "WATCH_ONLY"):
+            entry_reject = d.get("reason")
+        if not disqualify and entry_reject and eff_decision == "SKIP":
+            disqualify = str(entry_reject)
         return {
             "alert_id": d["alert_id"],
             "ts": d["ts"],
@@ -991,6 +1002,8 @@ def api_ai_feed():
             "grader_state": grader_st,
             "active_label": active_label,
             "disqualify_reason": disqualify,
+            "entry_reject_reason": entry_reject,
+            "entry_decision": score_payload.get("decision") or eff_decision,
             "alerts_processed": ticker_alert_counts.get(tk, 0) if tk else 0,
             "parsed": {
                 "price": parsed.get("price"),
@@ -1017,10 +1030,10 @@ def api_ai_feed():
 
     trade_sql = """
         SELECT s.alert_id, s.ticker, s.score, s.decision, s.reason, s.ts AS score_ts,
-               a.ts, a.type, a.raw, a.news_class, a.parsed_json
+               s.raw_json, a.ts, a.type, a.raw, a.news_class, a.parsed_json
         FROM scores s
         JOIN alerts a ON a.id = s.alert_id
-        WHERE UPPER(s.decision) = 'TRADE'
+        WHERE UPPER(s.decision) IN ('TRADE', 'TRADE_NOW')
     """
     trade_params: list = []
     if since_ts is not None:
@@ -1031,13 +1044,19 @@ def api_ai_feed():
         trade_params.append(float(until_ts))
     trade_sql += " ORDER BY s.ts DESC"
     trade_rows = db.fetchall(trade_sql, tuple(trade_params))
-    trade_by_ticker: dict[str, dict] = {}
+    trade_items: list[dict] = []
     for r in trade_rows:
         d = dict(r)
         tk = (d.get("ticker") or "").strip().upper()
-        if not tk or tk in trade_by_ticker:
+        if not tk:
             continue
-        trade_by_ticker[tk] = _feed_build_item(
+        score_payload: dict = {}
+        if d.get("raw_json"):
+            try:
+                score_payload = _json.loads(d["raw_json"])
+            except Exception:
+                score_payload = {}
+        item = _feed_build_item(
             {
                 "alert_id": d["alert_id"],
                 "ts": float(d.get("score_ts") or d["ts"] or 0),
@@ -1050,11 +1069,15 @@ def api_ai_feed():
                 "decision": d["decision"],
             }
         )
-    trade_items = sorted(
-        trade_by_ticker.values(),
-        key=lambda x: float(x.get("ts") or 0),
-        reverse=True,
-    )
+        item["entry_decision"] = score_payload.get("decision") or d.get("decision")
+        item["matched_setup"] = score_payload.get("matched_setup") or d.get("reason")
+        item["entry_reject_reason"] = score_payload.get("reject_reason")
+        item["size_grade"] = score_payload.get("size_grade")
+        item["structure_grade"] = score_payload.get("structure_grade")
+        item["tape_confirmed"] = score_payload.get("tape_confirmed")
+        item["entry_source"] = score_payload.get("source") or "entry_rules"
+        trade_items.append(item)
+    trade_items.sort(key=lambda x: float(x.get("ts") or 0), reverse=True)
 
     from collections import defaultdict
 
@@ -1181,7 +1204,11 @@ def api_ai_trade_analytics(trade_id: int):
         if str(tr.get("status") or "").upper() == "CLOSED" and tr.get("pnl_pct") is not None
         else None
     )
-    analytics = db.trade_analytics_for_trade(int(trade_id), exit_pct=exit_pct)
+    try:
+        analytics = db.trade_analytics_for_trade(int(trade_id), exit_pct=exit_pct)
+    except Exception as exc:
+        _log.exception("trade analytics failed id=%s", trade_id)
+        return jsonify(ok=False, error=str(exc)[:200]), 500
     monitor = db.monitor_log_for_trade(int(trade_id))
     try:
         from ai_sandbox import t212_ai as _t212_ai_disp
@@ -2110,3 +2137,237 @@ def api_ai_account():
         return jsonify(ok=False, error=str(cash.get("error"))), 503
     return jsonify(ok=True, cash=cash)
 
+
+# ── Discord Trader API routes ─────────────────────────────────────────────────
+
+def _dt_enrich_trade(trade: dict, wallet_map: dict[str, dict]) -> dict:
+    """Add live broker P&L fields — same pattern as api_ai_trades."""
+    import asyncio as _asyncio
+    from ai_sandbox import t212_discord as dt212
+
+    out = dict(trade)
+    inst = None
+    try:
+        loop = dt212.loop()
+        if loop and loop.is_running():
+            fut = _asyncio.run_coroutine_threadsafe(dt212.resolve_ticker(out.get("ticker", "")), loop)
+            inst = fut.result(timeout=5)
+    except Exception:
+        inst = None
+    if inst:
+        out["ticker"] = dt212.scanner_ticker_from_inst(inst)
+    tku = (inst or "").upper()
+    wm = wallet_map.get(tku) if tku else None
+    st = str(out.get("status") or "").upper()
+    if st == "OPEN" and wm:
+        if wm.get("total_cost_gbp") is not None:
+            out["wallet_total_cost_gbp"] = round(float(wm["total_cost_gbp"]), 2)
+        if wm.get("current_value_gbp") is not None:
+            out["wallet_current_value_gbp"] = round(float(wm["current_value_gbp"]), 2)
+        if wm.get("unreal_gbp") is not None:
+            out["live_pnl_gbp"] = round(float(wm["unreal_gbp"]), 2)
+        if wm.get("unreal_pct") is not None:
+            out["live_unreal_pct"] = round(float(wm["unreal_pct"]), 4)
+    if st == "SELL_PENDING":
+        out["pending_close"] = True
+        out["display_status"] = "SELL PENDING"
+    if st == "REJECTED" and out.get("t212_error"):
+        out["reject_reason"] = dt212.humanize_error(str(out["t212_error"]))
+    return out
+
+
+def _dt_broker_position_cards(open_trades: list[dict] | None = None) -> list[dict]:
+    """Open positions from T212 snapshot — merged with DB rows for close button."""
+    from ai_sandbox import t212_discord as dt212
+
+    by_ticker = {str(t.get("ticker") or "").upper(): t for t in (open_trades or [])}
+    cards: list[dict] = []
+    seen_inst: set[str] = set()
+    for pos in dt212.positions_snapshot_sync():
+        inst = str(pos.get("ticker") or "").upper()
+        qty = float(pos.get("quantity") or 0)
+        if qty <= 0 or inst in seen_inst:
+            continue
+        seen_inst.add(inst)
+        root = dt212.scanner_ticker_from_inst(inst)
+        wm = dt212.wallet_metrics_from_row(pos)
+        db_row = by_ticker.get(root) or {}
+        if not db_row.get("id"):
+            for t in (open_trades or []):
+                if dt212.instrument_for_ticker(str(t.get("ticker") or "")) == inst:
+                    db_row = t
+                    break
+        st = str(db_row.get("status") or "OPEN").upper()
+        cards.append({
+            "id": db_row.get("id"),
+            "ticker": root,
+            "instrument": inst,
+            "status": st,
+            "pending_close": st == "SELL_PENDING",
+            "quantity": qty,
+            "entry_price": float(pos.get("averagePrice") or pos.get("averagePricePaid") or 0),
+            "current_price": float(pos.get("currentPrice") or 0),
+            "entry_type": db_row.get("entry_type"),
+            "entry_ts": db_row.get("entry_ts"),
+            "stake_gbp": db_row.get("stake_gbp"),
+            "tp_pct": db_row.get("tp_pct"),
+            "live_pnl_gbp": wm.get("unreal_gbp"),
+            "live_unreal_pct": wm.get("unreal_pct"),
+            "wallet_total_cost_gbp": wm.get("total_cost_gbp"),
+            "wallet_current_value_gbp": wm.get("current_value_gbp"),
+            "broker_managed": True,
+        })
+    seen = {c["ticker"] for c in cards}
+    for t in (open_trades or []):
+        tk = dt212.normalize_ticker(str(t.get("ticker") or ""))
+        st = str(t.get("status") or "").upper()
+        t_inst = (dt212.instrument_for_ticker(tk) or "").upper()
+        if not tk or tk in seen or t_inst in seen_inst:
+            continue
+        if st not in ("OPEN", "SELL_PENDING"):
+            continue
+        cards.append({
+            "id": t.get("id"),
+            "ticker": tk,
+            "instrument": None,
+            "status": st,
+            "pending_close": st == "SELL_PENDING",
+            "quantity": t.get("quantity"),
+            "entry_price": t.get("entry_price"),
+            "current_price": t.get("exit_price"),
+            "entry_type": t.get("entry_type"),
+            "entry_ts": t.get("entry_ts"),
+            "stake_gbp": t.get("stake_gbp"),
+            "tp_pct": t.get("tp_pct"),
+            "live_pnl_gbp": t.get("live_pnl_gbp"),
+            "live_unreal_pct": t.get("live_unreal_pct"),
+            "wallet_total_cost_gbp": t.get("wallet_total_cost_gbp"),
+            "wallet_current_value_gbp": t.get("wallet_current_value_gbp"),
+            "broker_managed": False,
+        })
+    return cards
+
+
+@app.get("/api/discord-trader/status")
+def api_dt_status():
+    """Overall Discord Trader status: enabled flag, open trades, account info."""
+    from ai_sandbox import discord_trader as dt
+    from ai_sandbox import t212_discord as dt212
+    from ai_sandbox import db
+
+    wallet_map = dt212.wallet_map()
+    live_trades = [_dt_enrich_trade(t, wallet_map) for t in db.dt_live_trades()]
+    open_trades = [t for t in live_trades if str(t.get("status") or "").upper() == "OPEN"]
+    broker_positions = _dt_broker_position_cards(live_trades)
+    recent_msgs = db.dt_recent_messages(limit=50)
+    cash = dt212.cash_snapshot() or {}
+
+    return jsonify(
+        ok=True,
+        enabled=dt.enabled(),
+        bot_connected=dt.is_running(),
+        open_trades=open_trades,
+        broker_positions=broker_positions,
+        recent_messages=recent_msgs,
+        account={
+            "free": cash.get("free"),
+            "total": cash.get("total"),
+            "invested": cash.get("invested"),
+            "ppl": cash.get("ppl"),
+        },
+        config={
+            "stake_gbp": dt.stake_gbp(),
+            "tp_pct": dt.tp_pct(),
+        },
+    )
+
+
+@app.get("/api/discord-trader/trades")
+def api_dt_trades():
+    from ai_sandbox import db, t212_discord as dt212
+
+    limit = min(500, int(request.args.get("limit", 200)))
+    wallet_map = dt212.wallet_map()
+    trades = [_dt_enrich_trade(dict(t), wallet_map) for t in db.dt_all_trades(limit=limit)]
+    return jsonify(ok=True, trades=trades)
+
+
+@app.get("/api/discord-trader/account")
+def api_dt_account():
+    """Return cash balance from the Discord Trader T212 account."""
+    from ai_sandbox import t212_discord as dt212
+
+    cash = dt212.cash_snapshot() or {}
+    positions = dt212.positions_snapshot_sync()
+    free = float(cash.get("free", 0) or 0)
+    invested = float(cash.get("invested", 0) or 0)
+    total = float(cash.get("total", 0) or 0) or (free + invested)
+    return jsonify(ok=True, cash=cash, positions=positions, free=free, invested=invested, total=total)
+
+
+@app.get("/api/discord-trader/messages")
+def api_dt_messages():
+    from ai_sandbox import db
+    limit = min(500, int(request.args.get("limit", 100)))
+    msgs = db.dt_recent_messages(limit=limit)
+    return jsonify(ok=True, messages=msgs)
+
+
+@app.post("/api/discord-trader/close/<int:trade_id>")
+def api_dt_close(trade_id: int):
+    """Manually close an open Discord Trader position."""
+    import asyncio as _asyncio
+    from ai_sandbox import db, discord_trader as dt
+    trade = db.dt_trade_by_id(trade_id)
+    if not trade:
+        return jsonify(ok=False, error="trade not found"), 404
+    if trade["status"] != "OPEN":
+        return jsonify(ok=False, error="trade not open"), 400
+    trader = dt.get_trader()
+    if trader is None:
+        return jsonify(ok=False, error="Discord Trader not running"), 503
+    try:
+        _asyncio.run(trader._exit_trade(trade, reason="manual"))
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 500
+
+
+@app.get("/api/discord-trader/events")
+def api_dt_events():
+    """Server-Sent Events stream — pushes real-time Discord Trader updates to the browser."""
+    import queue as _queue
+    from ai_sandbox import discord_trader as dt
+
+    client_q: _queue.SimpleQueue = _queue.SimpleQueue()
+    with dt._sse_lock:
+        dt._sse_queues.append(client_q)
+
+    def _generate():
+        # Send an immediate heartbeat so the browser knows it's connected
+        yield "event: connected\ndata: {\"ok\": true}\n\n"
+        try:
+            while True:
+                try:
+                    payload = client_q.get(timeout=25)
+                    yield payload
+                except _queue.Empty:
+                    # Heartbeat every 25s to keep connection alive through proxies
+                    yield ": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            with dt._sse_lock:
+                try:
+                    dt._sse_queues.remove(client_q)
+                except ValueError:
+                    pass
+
+    return app.response_class(
+        _generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering
+        },
+    )

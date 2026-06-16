@@ -251,7 +251,76 @@ CREATE TABLE IF NOT EXISTS candle_setups (
   updated_ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_candle_setups_active ON candle_setups(state, ticker);
+
+-- Discord Trader: raw messages received from James' trader-tracker channel
+CREATE TABLE IF NOT EXISTS dt_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_message_id TEXT UNIQUE,
+  channel_id TEXT,
+  author TEXT,
+  content TEXT NOT NULL,
+  received_ts REAL NOT NULL,
+  parsed_type TEXT,  -- break_watch | limit_buy | stop_breach | trade_update | ignored
+  parsed_json TEXT
+);
+
+-- Discord Trader: break-level watches (waiting for 1m candle close above level)
+CREATE TABLE IF NOT EXISTS dt_break_watches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  break_level REAL NOT NULL,
+  stop_level REAL,
+  source_message_id TEXT,
+  state TEXT NOT NULL DEFAULT 'watching',  -- watching | triggered | expired | cancelled
+  created_ts REAL NOT NULL,
+  triggered_ts REAL,
+  expired_ts REAL,
+  trade_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_dt_break_watches_active ON dt_break_watches(state, ticker);
+
+-- Discord Trader: trades opened via the discord trader system
+CREATE TABLE IF NOT EXISTS dt_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  entry_type TEXT NOT NULL,  -- break_watch | limit_buy | manual
+  entry_price REAL,
+  entry_ts REAL,
+  quantity REAL,
+  stake_gbp REAL,
+  tp_pct REAL NOT NULL DEFAULT 8.0,
+  stop_price REAL,
+  exit_price REAL,
+  exit_ts REAL,
+  exit_reason TEXT,  -- tp_hit | stop_breach | manual | end_of_day
+  pnl_pct REAL,
+  pnl_gbp REAL,
+  status TEXT NOT NULL DEFAULT 'OPEN',  -- OPEN | CLOSED | REJECTED
+  t212_open_order_id TEXT,
+  t212_close_order_id TEXT,
+  t212_error TEXT,
+  source_message_id TEXT,
+  break_watch_id INTEGER,
+  created_ts REAL NOT NULL,
+  updated_ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dt_trades_open ON dt_trades(status, ticker);
 """
+
+_DT_TRADES_EXTRA_COLS: tuple[tuple[str, str], ...] = (
+    ("t212_tp_order_id", "TEXT"),
+    ("tp_limit_price", "REAL"),
+    ("signal_limit_price", "REAL"),
+)
+
+
+def _migrate_dt_trades_columns(c: sqlite3.Connection) -> None:
+    cur = c.execute("PRAGMA table_info(dt_trades)")
+    cols = {str(row[1]) for row in cur.fetchall()}
+    for name, typ in _DT_TRADES_EXTRA_COLS:
+        if name not in cols:
+            c.execute(f"ALTER TABLE dt_trades ADD COLUMN {name} {typ}")
+
 
 _TRADE_EXTRA_COLS: tuple[tuple[str, str], ...] = (
     ("alert_id", "INTEGER"),
@@ -320,6 +389,7 @@ def _connect() -> sqlite3.Connection:
     c.execute("PRAGMA synchronous=NORMAL;")
     c.executescript(_SCHEMA)
     _migrate_trades_columns(c)
+    _migrate_dt_trades_columns(c)
     _migrate_ticker_state_columns(c)
     _migrate_watch_history_ai_columns(c)
     _conn = c
@@ -966,6 +1036,20 @@ def closed_trades_for_ticker_day(
     return [dict(r) for r in rows]
 
 
+def all_closed_trades_since(since_ts: float) -> list[dict[str, Any]]:
+    """All CLOSED trades across all tickers since a given timestamp.
+    Used by the daily loss circuit breaker."""
+    rows = fetchall(
+        """SELECT id, ticker, pnl_gbp, pnl_pct, exit_ts, exit_reason
+             FROM trades
+            WHERE status='CLOSED'
+              AND exit_ts >= ?
+            ORDER BY exit_ts ASC""",
+        (float(since_ts),),
+    )
+    return [dict(r) for r in rows]
+
+
 def last_closed_trade_for_ticker(
     ticker: str,
     *,
@@ -1196,6 +1280,185 @@ def _audit_load(raw: str | None) -> dict[str, Any]:
 _PRE_REVIEW_WATCH_EVENT_KINDS = frozenset({"accumulating", "disqualified"})
 
 
+def record_candle_decision_episode(
+    ticker: str,
+    alert_id: int,
+    payload: dict[str, Any],
+    *,
+    exec_block_reason: str | None = None,
+    added_ts: float | None = None,
+) -> int:
+    """Persist one candle-model entry decision for AI History (grade always; exec may block)."""
+    now = float(added_ts if added_ts is not None else time.time())
+    dec = str(payload.get("decision") or "SKIP").upper()
+    if exec_block_reason:
+        reason = "EXEC_BLOCKED"
+        final_decision = "TRADE_NOW"
+        final_reason = str(exec_block_reason)[:500]
+        score = 100
+    elif dec in ("SKIP",):
+        reason = "CANDLE_SKIP"
+        final_decision = "SKIP"
+        final_reason = (
+            str(payload.get("reject_reason") or payload.get("notes") or "skip")[:500]
+        )
+        score = 0
+    elif dec in ("WATCH_ONLY", "WATCH"):
+        reason = "CANDLE_WATCH"
+        final_decision = "WATCH"
+        final_reason = str(payload.get("notes") or "watch")[:500]
+        score = 50
+    else:
+        reason = "CANDLE_TRADE"
+        final_decision = "TRADE"
+        final_reason = (
+            str(payload.get("matched_setup") or payload.get("notes") or "trade")[:500]
+        )
+        score = 100
+    audit: dict[str, Any] = {"entry_decision": payload, "source": "candle_model"}
+    if exec_block_reason:
+        audit["exec_block"] = exec_block_reason
+    return watch_history_insert(
+        ticker=ticker.strip().upper(),
+        added_ts=now,
+        ended_ts=now,
+        reason=reason,
+        reviews=0,
+        initial_score=score,
+        peak_score=score,
+        final_score=score,
+        final_decision=final_decision,
+        final_reason=final_reason,
+        trade_id=None,
+        alert_id=int(alert_id),
+        episode_type="CANDLE",
+        audit=audit,
+    )
+
+
+def record_candle_entry_rejected(
+    *,
+    slot_index: int,
+    ticker: str,
+    t212_code: str,
+    alert_id: int | None,
+    entry: float,
+    stop: float,
+    quantity: float,
+    brief: str,
+    kind: str,
+    http_status: int = 0,
+    body: Any = None,
+    entry_meta: dict[str, Any] | None = None,
+) -> int:
+    """REJECTED trade row + TRADE_FAILED AI History episode for candle broker reject."""
+    err_blob = json.dumps(
+        {"http_status": int(http_status), "body": body},
+        default=str,
+    )[:8000]
+    cap_gb = (
+        round(config.usd_notionals_to_gbp(float(quantity) * float(entry)), 4)
+        if quantity > 0 and entry > 0
+        else 0.0
+    )
+    rid = insert(
+        """INSERT INTO trades(slot, ticker, alert_id, entry_price, tp, stop,
+                              capital_gbp, quantity, open_ts, status, t212_error, exit_reason)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            int(slot_index),
+            t212_code,
+            alert_id,
+            float(entry),
+            None,
+            float(stop),
+            cap_gb,
+            0.0,
+            time.time(),
+            "REJECTED",
+            err_blob,
+            (brief or kind or "broker_reject")[:500],
+        ),
+    )
+    br: dict[str, Any] = {
+        "kind": kind,
+        "brief": (brief or "")[:500],
+        "http_status": int(http_status),
+    }
+    if body is not None:
+        try:
+            br["detail_json"] = json.dumps(body, default=str)[:8000]
+        except Exception:
+            br["detail_json"] = str(body)[:8000]
+    audit: dict[str, Any] = {
+        "failed_ts": time.time(),
+        "candle_model": True,
+        "raw_scanner_ticker": ticker.upper(),
+        "t212_instrument": t212_code,
+        "entry_decision": entry_meta,
+        "planned_entry": {
+            "planned_entry": float(entry),
+            "stop": float(stop),
+            "quantity_attempted": float(quantity),
+        },
+        "broker_rejection": br,
+        "scores_for_alert": scores_for_alert(int(alert_id)) if alert_id else [],
+    }
+    trade_audit_failed(
+        trade_id=int(rid),
+        alert_id=alert_id,
+        ticker_t212=t212_code,
+        added_ts=time.time(),
+        audit=audit,
+        final_reason=brief,
+    )
+    return int(rid)
+
+
+def backfill_candle_decision_history_from_scores(limit: int = 2000) -> int:
+    """Create CANDLE episodes from historical entry_rules scores missing AI History rows."""
+    lim = max(1, min(int(limit), 5000))
+    rows = fetchall(
+        """SELECT s.alert_id, s.ts, s.ticker, s.decision, s.reason, s.score, s.raw_json
+             FROM scores s
+            WHERE s.alert_id IS NOT NULL
+              AND s.raw_json LIKE '%"source": "entry_rules"%'
+              AND NOT EXISTS (
+                    SELECT 1 FROM watch_history h
+                     WHERE h.alert_id = s.alert_id
+                       AND h.episode_type = 'CANDLE'
+                  )
+            ORDER BY s.ts DESC
+            LIMIT ?""",
+        (lim,),
+    )
+    n = 0
+    for r in rows:
+        payload: dict[str, Any] = {}
+        if r["raw_json"]:
+            try:
+                payload = json.loads(r["raw_json"])
+            except Exception:
+                payload = {}
+        if not payload:
+            payload = {
+                "decision": r["decision"],
+                "reject_reason": r["reason"],
+                "notes": r["reason"],
+            }
+        try:
+            record_candle_decision_episode(
+                str(r["ticker"] or "?"),
+                int(r["alert_id"]),
+                payload,
+                added_ts=float(r["ts"] or time.time()),
+            )
+            n += 1
+        except Exception:
+            _log.exception("backfill candle history alert_id=%s", r["alert_id"])
+    return n
+
+
 def watch_history_counts_for_ai_history(
     *,
     reason: str | None,
@@ -1205,7 +1468,7 @@ def watch_history_counts_for_ai_history(
 ) -> bool:
     """True when a watch_history row belongs in AI History (review stage+), not scanner-only."""
     ep = (episode_type or "WATCH").upper()
-    if ep == "TRADE":
+    if ep in ("TRADE", "CANDLE"):
         return True
     r = str(reason or "")
     if r != WATCH_ACTIVE_REASON:
@@ -1824,7 +2087,9 @@ def trade_audit_finalize(
 
 
 MONITOR_RAW_TICK_1S = "tick_1s"
+MONITOR_RAW_TICK_30S = "tick_30s"
 MONITOR_RAW_EXIT_TRIGGER = "exit_trigger"
+MONITOR_SAMPLE_INTERVAL_SEC = 30.0
 
 
 def _monitor_log_has_ts_near(existing: list[float], ts: float, *, tol: float = 0.25) -> bool:
@@ -1930,8 +2195,81 @@ def monitor_log_backfill_all_exit_ticks(*, window_sec: float = 30.0) -> int:
     return total
 
 
+def monitor_log_synthesize_30s_ticks(
+    trade_id: int,
+    *,
+    sample_sec: float = MONITOR_SAMPLE_INTERVAL_SEC,
+    exit_window_sec: float = 30.0,
+) -> int:
+    """Backfill ~30s monitor samples from ``trade_ticks`` (body of trade, pre-exit window)."""
+    row = fetchone(
+        "SELECT open_ts, exit_ts, status FROM trades WHERE id=?",
+        (int(trade_id),),
+    )
+    if not row:
+        return 0
+    tr = dict(row)
+    st = str(tr.get("status") or "").upper()
+    if st not in ("SELL_PENDING", "CLOSED"):
+        return 0
+    open_ts = float(tr.get("open_ts") or 0)
+    exit_ts = float(tr.get("exit_ts") or 0)
+    if open_ts <= 0 or exit_ts <= open_ts:
+        return 0
+    tail_start = exit_ts - float(exit_window_sec)
+    existing_rows = fetchall("SELECT ts FROM monitor_log WHERE trade_id=?", (int(trade_id),))
+    existing_ts = [float(r["ts"]) for r in existing_rows]
+    ticks = fetchall(
+        """SELECT ts, price, unreal_pct FROM trade_ticks
+            WHERE trade_id=? AND ts >= ? AND ts < ?
+            ORDER BY ts ASC""",
+        (int(trade_id), open_ts, tail_start),
+    )
+    if not ticks:
+        return 0
+    bucket_sec = max(5.0, float(sample_sec))
+    inserted = 0
+    next_bucket = open_ts
+    pick: sqlite3.Row | None = None
+    for t in ticks:
+        td = dict(t)
+        ts = float(td["ts"])
+        if ts < next_bucket:
+            pick = t
+            continue
+        if pick is None:
+            pick = t
+        pt = dict(pick)
+        pts = float(pt["ts"])
+        if _monitor_log_has_ts_near(existing_ts, pts, tol=bucket_sec * 0.45):
+            pick = t
+            next_bucket = ts + bucket_sec
+            continue
+        execute(
+            """INSERT INTO monitor_log(trade_id, ts, price, unreal_pct, ai_decision, raw_response)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                int(trade_id),
+                pts,
+                pt.get("price"),
+                pt.get("unreal_pct"),
+                None,
+                MONITOR_RAW_TICK_30S,
+            ),
+        )
+        existing_ts.append(pts)
+        inserted += 1
+        pick = t
+        next_bucket = pts + bucket_sec
+    return inserted
+
+
 def monitor_log_for_trade(trade_id: int, *, window_sec: float = 30.0) -> list[dict[str, Any]]:
-    """Monitor rows for a trade, ensuring the final window of 1s ticks is present."""
+    """Monitor rows: ~30s samples for the trade body + 1s ticks in the final exit window."""
+    try:
+        monitor_log_synthesize_30s_ticks(int(trade_id), exit_window_sec=window_sec)
+    except Exception:
+        _log.debug("monitor_log_synthesize_30s_ticks failed trade_id=%s", trade_id)
     try:
         monitor_log_ensure_exit_ticks(int(trade_id), window_sec=window_sec)
     except Exception:
@@ -2175,6 +2513,37 @@ def candle_setup_list_active() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def candle_setup_recent_failed_for_ticker(
+    ticker: str, *, within_sec: float = 600.0
+) -> dict[str, Any] | None:
+    """Most recent candle setup that failed entry but may still have filled at broker."""
+    cutoff = time.time() - float(within_sec)
+    row = fetchone(
+        """SELECT * FROM candle_setups
+            WHERE UPPER(ticker)=? AND trade_id IS NULL
+              AND outcome='entry_failed' AND updated_ts >= ?
+            ORDER BY id DESC LIMIT 1""",
+        (ticker.upper().lstrip("$"), cutoff),
+    )
+    return dict(row) if row else None
+
+
+def candle_setup_awaiting_fill_for_ticker(
+    ticker: str, *, within_sec: float = 900.0
+) -> dict[str, Any] | None:
+    """Setup still open (waiting for fill / not yet linked to a trade row)."""
+    cutoff = time.time() - float(within_sec)
+    row = fetchone(
+        """SELECT * FROM candle_setups
+            WHERE UPPER(ticker)=? AND trade_id IS NULL
+              AND state NOT IN ('closed', 'not_filled')
+              AND updated_ts >= ?
+            ORDER BY id DESC LIMIT 1""",
+        (ticker.upper().lstrip("$"), cutoff),
+    )
+    return dict(row) if row else None
+
+
 def wipe_all_tables() -> None:
     """Delete all AI sandbox rows (SQLite). Safe to call while idle; restart the engine after.
 
@@ -2264,3 +2633,238 @@ def recent_ticker_alerts(ticker: str, hours: float, limit: int = 50) -> list[dic
         (ticker.upper(), cutoff, limit),
     )
     return [dict(r) for r in rows]
+
+
+# ── Discord Trader helpers ────────────────────────────────────────────────────
+
+def dt_save_message(
+    discord_message_id: str,
+    channel_id: str,
+    author: str,
+    content: str,
+    received_ts: float,
+    parsed_type: str | None = None,
+    parsed_json: str | None = None,
+) -> int:
+    """Insert a raw Discord message; returns new row id."""
+    return execute(
+        """INSERT OR IGNORE INTO dt_messages
+           (discord_message_id, channel_id, author, content, received_ts, parsed_type, parsed_json)
+           VALUES (?,?,?,?,?,?,?)""",
+        (discord_message_id, channel_id, author, content, received_ts, parsed_type, parsed_json),
+    ).lastrowid or 0
+
+
+def dt_recent_messages(limit: int = 100) -> list[dict]:
+    rows = fetchall(
+        "SELECT * FROM dt_messages ORDER BY received_ts DESC LIMIT ?", (limit,)
+    )
+    return [dict(r) for r in rows]
+
+
+def dt_create_break_watch(
+    ticker: str, break_level: float, stop_level: float | None, source_message_id: str | None
+) -> int:
+    now = time.time()
+    return execute(
+        """INSERT INTO dt_break_watches
+           (ticker, break_level, stop_level, source_message_id, state, created_ts)
+           VALUES (?,?,?,?,'watching',?)""",
+        (ticker.upper(), break_level, stop_level, source_message_id, now),
+    ).lastrowid or 0
+
+
+def dt_active_break_watches() -> list[dict]:
+    rows = fetchall(
+        "SELECT * FROM dt_break_watches WHERE state='watching' ORDER BY created_ts DESC"
+    )
+    return [dict(r) for r in rows]
+
+
+def dt_expire_break_watch(watch_id: int) -> None:
+    execute(
+        "UPDATE dt_break_watches SET state='expired', expired_ts=? WHERE id=?",
+        (time.time(), watch_id),
+    )
+
+
+def dt_trigger_break_watch(watch_id: int, trade_id: int) -> None:
+    execute(
+        "UPDATE dt_break_watches SET state='triggered', triggered_ts=?, trade_id=? WHERE id=?",
+        (time.time(), trade_id, watch_id),
+    )
+
+
+def dt_cancel_break_watch(watch_id: int) -> None:
+    execute(
+        "UPDATE dt_break_watches SET state='cancelled', expired_ts=? WHERE id=?",
+        (time.time(), watch_id),
+    )
+
+
+def dt_set_tp_order(trade_id: int, tp_order_id: str | None, tp_limit_price: float | None = None) -> None:
+    execute(
+        """UPDATE dt_trades SET t212_tp_order_id=?, tp_limit_price=?, updated_ts=?
+           WHERE id=?""",
+        (tp_order_id, tp_limit_price, time.time(), int(trade_id)),
+    )
+
+
+def dt_clear_tp_order(trade_id: int) -> None:
+    execute(
+        "UPDATE dt_trades SET t212_tp_order_id=NULL, updated_ts=? WHERE id=?",
+        (time.time(), int(trade_id)),
+    )
+
+
+def dt_open_trade(
+    ticker: str,
+    entry_type: str,
+    stake_gbp: float,
+    tp_pct: float = 8.0,
+    stop_price: float | None = None,
+    source_message_id: str | None = None,
+    break_watch_id: int | None = None,
+    signal_limit_price: float | None = None,
+) -> int:
+    now = time.time()
+    return execute(
+        """INSERT INTO dt_trades
+           (ticker, entry_type, stake_gbp, tp_pct, stop_price, status,
+            source_message_id, break_watch_id, signal_limit_price, created_ts, updated_ts)
+           VALUES (?,?,?,?,?,'OPEN',?,?,?,?,?)""",
+        (ticker.upper(), entry_type, stake_gbp, tp_pct, stop_price,
+         source_message_id, break_watch_id, signal_limit_price, now, now),
+    ).lastrowid or 0
+
+
+def dt_set_trade_tp_pct(trade_id: int, tp_pct: float) -> None:
+    execute(
+        "UPDATE dt_trades SET tp_pct=?, updated_ts=? WHERE id=?",
+        (tp_pct, time.time(), trade_id),
+    )
+
+
+def dt_fill_trade(
+    trade_id: int,
+    entry_price: float,
+    quantity: float,
+    t212_order_id: str | None = None,
+) -> None:
+    execute(
+        """UPDATE dt_trades
+           SET entry_price=?, entry_ts=?, quantity=?, t212_open_order_id=?, updated_ts=?
+           WHERE id=?""",
+        (entry_price, time.time(), quantity, t212_order_id, time.time(), trade_id),
+    )
+
+
+def dt_close_trade(
+    trade_id: int,
+    exit_price: float,
+    exit_reason: str,
+    pnl_pct: float,
+    pnl_gbp: float,
+    t212_close_order_id: str | None = None,
+) -> None:
+    execute(
+        """UPDATE dt_trades
+           SET exit_price=?, exit_ts=?, exit_reason=?, pnl_pct=?, pnl_gbp=?,
+               t212_close_order_id=?, status='CLOSED', updated_ts=?
+           WHERE id=?""",
+        (exit_price, time.time(), exit_reason, pnl_pct, pnl_gbp,
+         t212_close_order_id, time.time(), trade_id),
+    )
+
+
+def dt_reject_trade(trade_id: int, error: str) -> None:
+    execute(
+        "UPDATE dt_trades SET status='REJECTED', t212_error=?, updated_ts=? WHERE id=?",
+        (error, time.time(), trade_id),
+    )
+
+
+def dt_restore_trade(
+    trade_id: int,
+    entry_price: float,
+    quantity: float,
+    t212_order_id: str | None = None,
+) -> None:
+    """Heal a REJECTED row when the broker actually filled."""
+    execute(
+        """UPDATE dt_trades
+           SET status='OPEN', entry_price=?, entry_ts=?, quantity=?,
+               t212_open_order_id=?, t212_error=NULL, updated_ts=?
+           WHERE id=?""",
+        (entry_price, time.time(), quantity, t212_order_id, time.time(), trade_id),
+    )
+
+
+def dt_adopt_broker_trade(
+    ticker: str,
+    entry_price: float,
+    quantity: float,
+    *,
+    entry_type: str = "manual",
+    stake_gbp: float = 0.0,
+    tp_pct: float = 8.0,
+) -> int:
+    """Create an OPEN row for a broker position with no DB record."""
+    now = time.time()
+    return execute(
+        """INSERT INTO dt_trades
+           (ticker, entry_type, stake_gbp, tp_pct, entry_price, entry_ts, quantity,
+            status, created_ts, updated_ts)
+           VALUES (?,?,?,?,?,?,?,'OPEN',?,?)""",
+        (ticker.upper(), entry_type, stake_gbp, tp_pct, entry_price, now, quantity, now, now),
+    ).lastrowid or 0
+
+
+def dt_sell_pending_trade(
+    trade_id: int,
+    exit_reason: str,
+    t212_close_order_id: str | None = None,
+) -> None:
+    execute(
+        """UPDATE dt_trades
+           SET status='SELL_PENDING', exit_ts=?, exit_reason=?, t212_close_order_id=?, updated_ts=?
+           WHERE id=? AND status='OPEN'""",
+        (time.time(), exit_reason, t212_close_order_id, time.time(), trade_id),
+    )
+
+
+def dt_confirm_close_trade(trade_id: int) -> None:
+    execute(
+        """UPDATE dt_trades SET status='CLOSED', updated_ts=?
+           WHERE id=? AND status='SELL_PENDING'""",
+        (time.time(), trade_id),
+    )
+
+
+def dt_open_trades() -> list[dict]:
+    rows = fetchall(
+        "SELECT * FROM dt_trades WHERE status='OPEN' ORDER BY created_ts DESC"
+    )
+    return [dict(r) for r in rows]
+
+
+def dt_live_trades() -> list[dict]:
+    """OPEN or SELL_PENDING — positions still on broker or exit in flight."""
+    rows = fetchall(
+        """SELECT * FROM dt_trades
+           WHERE status IN ('OPEN', 'SELL_PENDING')
+           ORDER BY created_ts DESC"""
+    )
+    return [dict(r) for r in rows]
+
+
+def dt_all_trades(limit: int = 200) -> list[dict]:
+    rows = fetchall(
+        "SELECT * FROM dt_trades ORDER BY created_ts DESC LIMIT ?", (limit,)
+    )
+    return [dict(r) for r in rows]
+
+
+def dt_trade_by_id(trade_id: int) -> dict | None:
+    row = fetchone("SELECT * FROM dt_trades WHERE id=?", (trade_id,))
+    return dict(row) if row else None
